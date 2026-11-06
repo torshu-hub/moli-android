@@ -1,6 +1,8 @@
 # The Android app: the engine (crates/moli-android) and the APK, then its
 # signature with the owner's certificate when the secret ANDROID_SIGNING_BUNDLE
 # exists. Until then, an APK signed with the runner's debug key, for a trial.
+# From main, the APK is published at a fixed address (pre-release `apk`):
+# https://github.com/torshu-hub/moli-android/releases/download/apk/moli.apk
 name: android
 
 on:
@@ -55,6 +57,27 @@ jobs:
           unzip -l out/moli-unsigned.apk | grep -q 'lib/arm64-v8a/libmoli_android.so'
           nm="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
           test "$("$nm" -D --defined-only android/app/src/main/jniLibs/arm64-v8a/libmoli_android.so | grep -c ' Java_io_moli_android_NativeServer_')" = 4
+      # The repository is public, so is the APK: nothing but public strings in it.
+      # Secrets (keys, tokens) stop the build; e-mails and MAC-like strings are
+      # third parties' (libraries, root certificates), listed for review.
+      - name: Nothing secret in the APK
+        run: |
+          scan="$RUNNER_TEMP/scan"
+          mkdir -p "$scan/scripts" "$RUNNER_TEMP/apk"
+          cp scripts/leak-check.sh "$scan/scripts/"
+          unzip -q out/moli-unsigned.apk -d "$RUNNER_TEMP/apk"
+          find "$RUNNER_TEMP/apk" -type f -exec strings -n 6 {} + > "$scan/apk-strings.txt"
+          printf '%s\n' '@' '[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}' > "$RUNNER_TEMP/apk-allow.txt"
+          MOLI_ALLOWLIST="$RUNNER_TEMP/apk-allow.txt" sh "$scan/scripts/leak-check.sh"
+          {
+            echo "Adresses e-mail dans l'APK (chaînes de tiers) :"
+            grep -ohE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$scan/apk-strings.txt" | sort -u | sed 's/^/- /'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Debug certificate
+        run: |
+          tools="$ANDROID_HOME/build-tools/35.0.0"
+          test -x "$tools/apksigner" || "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;35.0.0" > /dev/null
+          echo "Certificat de l'APK d'essai debug : \`$("$tools/apksigner" verify --print-certs out/moli-essai-debug.apk | sed -n 's/.*certificate SHA-256 digest: //p')\`" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: moli-unsigned
@@ -74,6 +97,8 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      signed: ${{ steps.sign.outputs.signed }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -118,3 +143,57 @@ jobs:
           name: moli-signed
           path: out/
           if-no-files-found: error
+
+  # From main only: the APK at a fixed address, replaced at each build, for the
+  # tablet (no GitHub account, no zip). The owner's signed APK when it exists,
+  # else the trial one (debug key: uninstall the previous one first).
+  publish:
+    needs: [apk, sign]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: android-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: needs.sign.outputs.signed == 'true'
+        with:
+          name: moli-signed
+          path: in
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: needs.sign.outputs.signed != 'true'
+        with:
+          name: moli-essai-debug
+          path: in
+      - name: Pre-release apk
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SIGNED: ${{ needs.sign.outputs.signed }}
+        run: |
+          if [ "$SIGNED" = true ]; then
+            cp in/moli.apk moli.apk
+            kind="signée par le certificat du propriétaire : s'installe par-dessus la précédente"
+          else
+            cp in/moli-essai-debug.apk moli.apk
+            kind="d'essai, signée par la clé debug du runner : désinstaller la précédente avant (les données de l'appli sont perdues)"
+          fi
+          tools="$ANDROID_HOME/build-tools/35.0.0"
+          test -x "$tools/apksigner" || "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;35.0.0" > /dev/null
+          cert=$("$tools/apksigner" verify --print-certs moli.apk | sed -n 's/.*certificate SHA-256 digest: //p')
+          sum=$(sha256sum moli.apk | cut -d' ' -f1)
+          notes="APK $kind.
+
+          Source : $GITHUB_SHA (build $GITHUB_RUN_NUMBER, $(date -u +%Y-%m-%d)).
+          Certificat SHA-256 : \`$cert\`
+          APK SHA-256 : \`$sum\`"
+          gh release view apk > /dev/null 2>&1 ||
+            gh release create apk --prerelease --target "$GITHUB_SHA" --title "Moli Android (dernière APK de main)" --notes "$notes"
+          # The tag follows the APK's source.
+          gh api -X PATCH "repos/$GH_REPO/git/refs/tags/apk" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+          gh release upload apk moli.apk --clobber
+          gh release edit apk --notes "$notes"
+          echo "APK publiée : https://github.com/$GH_REPO/releases/download/apk/moli.apk" >> "$GITHUB_STEP_SUMMARY"
