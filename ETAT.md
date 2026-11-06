@@ -1,6 +1,6 @@
 # ETAT — Moli OS Android
 
-- **Jalon** : mission 1 terminée (socle essayé sur la tablette, ok). Mission 2 non choisie. En cours : lot 1 resynchronisation avec l'officiel, lot 2 livraison de l'APK.
+- **Jalon** : mission 1 terminée (socle essayé sur la tablette, ok). Mission 2 non choisie. Lot 1 (resynchronisation) fait ; en cours : lot 2 (livraison de l'APK).
 - **Branche / PR** : mission 1 (torshu-hub/moli-android#2) et lot 1 (resynchronisation, officiel `fc40b39`, torshu-hub/moli-android#3) fusionnés. Lot 2 : `claude/livraison-apk`, PR torshu-hub/moli-android#4.
 - **Décisions actives** : DECISIONS.md ; hébergement JNI repris de `moli-os-android@moli-beta2-code-24`, sans porte cookie ; identifiant `io.moli.android` (validé) ; écoute `0.0.0.0:8790` comme l'officiel (validé, accès depuis les autres appareils voulu) ; nouveau certificat de signature (validé) ; code de la maison choisi au premier démarrage, comme `MOLI_UI_PIN` (gardé, 6 nov.). Accès réseau sans code : on ne change rien, `[guard]` intouché (décidé le 6 nov.). **À reposer dans les cinq lignes de la mission Hyundai** : option `protected_devices` sur le verrouillage seulement.
 - **Preuves** : scripts/check.sh vert (dont le test `hosted`) ; CI check, audit et android vertes ; l'APK contient le moteur et ses 4 points d'entrée JNI ; constat réseau mesuré le 6 nov. (PR#2). Socle essayé sur la tablette (APK d'essai debug) : ok. Lot 2 : APK sans secret (contrôle à chaque build) ; clé debug différente à chaque build (vérifié : deux empreintes différentes pour le même commit). Pas encore : APK signée.
