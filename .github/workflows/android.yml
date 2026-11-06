@@ -72,12 +72,12 @@ jobs:
           {
             echo "Adresses e-mail dans l'APK (chaînes de tiers) :"
             grep -ohE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$scan/apk-strings.txt" | sort -u | sed 's/^/- /'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Debug certificate
         run: |
           tools="$ANDROID_HOME/build-tools/35.0.0"
           test -x "$tools/apksigner" || "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;35.0.0" > /dev/null
-          echo "Certificat de l'APK d'essai debug : \`$("$tools/apksigner" verify --print-certs out/moli-essai-debug.apk | sed -n 's/.*certificate SHA-256 digest: //p')\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Certificat de l'APK d'essai debug : \`$("$tools/apksigner" verify --print-certs out/moli-essai-debug.apk | sed -n 's/.*certificate SHA-256 digest: //p')\`" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: moli-unsigned
