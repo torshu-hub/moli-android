@@ -1,0 +1,28 @@
+[package]
+name = "moli-android"
+description = "JNI host for the official Moli engine (the Android app)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+moli-os = { path = "../moli-os" }
+moli-runtime.workspace = true
+anyhow.workspace = true
+jni = "0.21.1"
+
+# The workspace's lints, except `unsafe_code`: JNI entry points need
+# `#[unsafe(no_mangle)]`, and nothing else here is unsafe.
+[lints.rust]
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"

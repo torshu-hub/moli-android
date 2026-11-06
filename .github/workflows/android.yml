@@ -1,0 +1,116 @@
+# The Android app: the engine (crates/moli-android) and the APK, then its
+# signature with the owner's certificate when the secret ANDROID_SIGNING_BUNDLE
+# exists. Until then, an APK signed with the runner's debug key, for a trial.
+name: android
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: android
+      - name: NDK
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;28.2.13676358" > /dev/null'
+      - name: Dashboard
+        working-directory: web
+        run: npm ci --no-audit --no-fund && npm run build
+      - name: Engine
+        run: sh scripts/build-android.sh
+      - name: APK
+        working-directory: android
+        run: ./gradlew --no-daemon -PmoliVersionCode=${{ github.run_number }} :app:assembleRelease :app:assembleDebug
+      - name: Gather
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/app-release-unsigned.apk out/moli-unsigned.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk out/moli-essai-debug.apk
+          git rev-parse HEAD > out/source.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: moli-unsigned
+          path: |
+            out/moli-unsigned.apk
+            out/source.txt
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: moli-essai-debug
+          path: out/moli-essai-debug.apk
+          if-no-files-found: error
+
+  # No checkout: only the APK built above meets the key.
+  sign:
+    needs: apk
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: moli-unsigned
+          path: in
+      - name: Sign
+        id: sign
+        env:
+          BUNDLE: ${{ secrets.ANDROID_SIGNING_BUNDLE }}
+        run: |
+          if [ -z "$BUNDLE" ]; then
+            echo "Secret ANDROID_SIGNING_BUNDLE absent : pas d'APK signée par le certificat du propriétaire (l'APK d'essai debug est dans les artefacts)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Same JSON as the old fork's BETA_SIGNING_BUNDLE: {"p12": base64, "password": "..."}.
+          python3 -I - <<'PY'
+          import base64, json, os
+          bundle = json.loads(os.environ['BUNDLE'])
+          print('::add-mask::' + bundle['password'])
+          target = os.path.join(os.environ['RUNNER_TEMP'], 'key.p12')
+          fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, 'wb') as out:
+              out.write(base64.b64decode(bundle['p12'], validate=True))
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'key.pass'), 'w', opener=lambda p, f: os.open(p, f, 0o600)) as out:
+              out.write(bundle['password'])
+          PY
+          tools="$ANDROID_HOME/build-tools/35.0.0"
+          test -x "$tools/apksigner" || "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;35.0.0" > /dev/null
+          mkdir -p out
+          "$tools/apksigner" sign --ks "$RUNNER_TEMP/key.p12" --ks-type PKCS12 \
+            --ks-pass "file:$RUNNER_TEMP/key.pass" --key-pass "file:$RUNNER_TEMP/key.pass" \
+            --out out/moli.apk in/moli-unsigned.apk
+          rm -f "$RUNNER_TEMP/key.p12" "$RUNNER_TEMP/key.pass"
+          cert=$("$tools/apksigner" verify --print-certs out/moli.apk | sed -n 's/.*certificate SHA-256 digest: //p')
+          cp in/source.txt out/
+          (cd out && sha256sum moli.apk > SHA256SUMS)
+          echo "APK signée. Certificat SHA-256 : \`$cert\`. Source : \`$(cat in/source.txt)\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: steps.sign.outputs.signed == 'true'
+        with:
+          name: moli-signed
+          path: out/
+          if-no-files-found: error
