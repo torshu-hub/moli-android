@@ -136,6 +136,24 @@ mod tests {
         Some(response)
     }
 
+    /// Opens a session with the house's code: written into the vault.
+    fn sign_in(port: u16, pin: &str) -> String {
+        let body = format!("{{\"pin\":\"{pin}\"}}");
+        let mut socket = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(
+            socket,
+            "POST /api/session HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut response = String::new();
+        socket.read_to_string(&mut response).unwrap();
+        response
+    }
+
     fn wait_healthy(port: u16) -> String {
         let end = Instant::now() + Duration::from_secs(20);
         while Instant::now() < end {
@@ -148,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn starts_answers_stops_and_restarts_without_a_key_file() {
+    fn starts_answers_stops_and_restarts_in_process_without_a_key_file() {
         let dir = std::env::temp_dir().join(format!("moli-hosted-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -172,6 +190,9 @@ mod tests {
         assert_eq!(moli.port(), port);
         assert!(wait_healthy(port).contains("moli-os"));
         assert!(moli.running());
+        let session = sign_in(port, "482913");
+        assert!(session.starts_with("HTTP/1.1 200"), "{session}");
+        assert!(dir.join("secrets.enc").exists());
         moli.stop().unwrap();
         assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
         // The key stays with the host: never a key file beside the data.
@@ -180,6 +201,9 @@ mod tests {
 
         let again = Hosted::start(&config, key, "482913".into()).unwrap();
         wait_healthy(port);
+        // The vault is written again in the same process (its file lock freed).
+        let session = sign_in(port, "482913");
+        assert!(session.starts_with("HTTP/1.1 200"), "{session}");
         again.stop().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
