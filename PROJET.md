@@ -26,12 +26,12 @@ Une intégration propre, c'est une fonctionnalité complète et native de Moli O
 - Avant de coder : cinq lignes (ce que tu construis, ce que tu ne construis pas, quel mécanisme natif tu réutilises). Les publier dans la PR, puis poursuivre sans attendre ma réponse ; si je corrige, on ajuste.
 - Ne jamais rester bloqué sur une question : je ne suis pas toujours là. Écrire la question dans le rapport, choisir la lecture la plus raisonnable, dire laquelle en tête du travail, et continuer. Seuls s'arrêtent les actes de la liste « À me demander » et les choix irréversibles : les préparer, les mettre de côté, et poursuivre les tâches indépendantes.
 - Anticiper mes validations. Dès les cinq lignes, lister d'un coup tout ce dont tu auras besoin de ma part pour aller au bout (accès, secrets, comptes de test, essais sur la tablette, accords de la liste « À me demander »), pour que je les donne en une fois. Ne redemander plus tard que ce qui n'était pas prévisible.
-- Lots courts, sur une branche, PR en brouillon ; s'arrêter au premier résultat visible. Contrôles : scripts/check.sh et la CI.
+- Lots courts, sur une branche, avec une PR ; s'arrêter au premier résultat visible. Tu fusionnes toi-même, je n'ai rien à faire sur GitHub. Contrôles : scripts/check.sh et la CI.
 - Rapport court dans la PR : ajouté, retiré, écarts avec Moli officiel, « rien d'anticipé ».
 - État : un seul ETAT.md court (jalon, branche/PR, décisions actives, preuves, prochaine action).
 - Quand je lance ou change une mission : conseiller modèle et niveau de réflexion selon la difficulté et mon quota ; colorer seulement ce qui change.
 
 ## Accords
-- Déjà accordés : branches, commits, PR brouillon, CI, construction et signature de l'APK par le pipeline existant (lancer le workflow de signature, pas le modifier).
-- À me demander : fusion vers main, secrets réels, dépenses, envois ou publications externes, suppressions importantes, commande d'un appareil réel par un agent. Mes essais sur mon matériel n'ont besoin d'aucun accord.
+- Déjà accordés : branches, commits, PR, fusion de tes PR vers main quand la CI est verte et que ton rapport est publié, CI, construction et signature de l'APK par le pipeline existant (lancer le workflow de signature, pas le modifier).
+- À me demander : secrets réels, dépenses, envois ou publications externes, suppressions importantes, commande d'un appareil réel par un agent. Mes essais sur mon matériel n'ont besoin d'aucun accord.
 - Aucun secret ni donnée personnelle dans le dépôt (il est public).
