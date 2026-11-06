@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="state_stopped">Stopped</string>
+    <string name="state_starting">Starting…</string>
+    <string name="state_stopping">Stopping…</string>
+    <string name="state_running">Running, port %1$d</string>
+    <string name="state_failed">Error: %1$s</string>
+    <string name="start">Start</string>
+    <string name="stop">Stop</string>
+    <string name="open_dashboard">Open Moli</string>
+    <string name="integrations">Integrations</string>
+    <string name="integrations_empty">No integration to configure yet.</string>
+    <string name="pin_title">House code</string>
+    <string name="pin_message">6 to 8 digits. The dashboard asks for it to confirm what commits the house.</string>
+    <string name="pin_invalid">6 to 8 digits</string>
+    <string name="key_failed">The protected key cannot be read.</string>
+    <string name="service_running">Moli is running on this tablet.</string>
+</resources>

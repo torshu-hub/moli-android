@@ -1,9 +1,11 @@
-//! Moli OS binary: one process, every surface.
+//! Moli OS binary: one process, every surface. Also a library (`cli.rs`
+//! is the command), for a host that runs Moli in its own process: [`hosted`].
 
 mod airzone;
 mod backup;
 mod catalogue;
 mod config;
+pub mod hosted;
 mod timezone;
 
 use std::path::PathBuf;
@@ -169,7 +171,8 @@ fn model_command(command: &ModelCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn main() -> anyhow::Result<()> {
+/// The `moli-os` command.
+pub fn main() -> anyhow::Result<()> {
     let boot = Instant::now();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -272,7 +275,7 @@ fn main() -> anyhow::Result<()> {
             .worker_threads(config.server.worker_threads)
             .enable_all()
             .build()?
-            .block_on(serve(config, boot)),
+            .block_on(serve(config, boot, None)),
     }
 }
 
@@ -338,13 +341,13 @@ fn speak_and_tell_the_time(config: &Config) {
     }
 }
 
-async fn serve(config: Config, boot: Instant) -> anyhow::Result<()> {
+async fn serve(config: Config, boot: Instant, host: Option<hosted::Host>) -> anyhow::Result<()> {
     // Before anything opens the data directory.
     demo_fresh(&config)?;
     speak_and_tell_the_time(&config);
     // The master key comes from the environment (a secrets manager), or a
-    // new house's key file.
-    let secrets = master_key(&config.server.data_dir, true)?
+    // new house's key file; hosted, from the host.
+    let secrets = hosted::master_key(host.as_ref(), &config.server.data_dir)?
         .map(|key| (config.server.data_dir.join("secrets.enc"), key));
     if secrets.is_none() {
         tracing::warn!("no master key: drivers cannot persist pairing credentials");
@@ -397,7 +400,7 @@ async fn serve(config: Config, boot: Instant) -> anyhow::Result<()> {
     let shutdown = cancel.clone();
     // Given, even empty: the house is set up (its vault is wrong); absent:
     // a new house, which may ask for its installation.
-    let ui_pin = from_env_or_file("MOLI_UI_PIN")?
+    let ui_pin = hosted::ui_pin(host.as_ref())?
         .as_deref()
         .map(moli_api::UiPin::new);
     let (assistant, automations, automating) =
@@ -426,7 +429,7 @@ async fn serve(config: Config, boot: Instant) -> anyhow::Result<()> {
             .into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
-        wait_for_signal().await;
+        hosted::stopped(host).await;
         tracing::info!("shutting down");
         shutdown.cancel();
     })

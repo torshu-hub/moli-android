@@ -32,6 +32,6 @@ Une intégration propre, c'est une fonctionnalité complète et native de Moli O
 - Quand je lance ou change une mission : conseiller modèle et niveau de réflexion selon la difficulté et mon quota ; colorer seulement ce qui change.
 
 ## Accords
-- Déjà accordés : branches, commits, PR, fusion de tes PR vers main quand la CI est verte et que ton rapport est publié, CI, construction et signature de l'APK par le pipeline existant (lancer le workflow de signature, pas le modifier).
+- Déjà accordés : branches, commits, PR, fusion de tes PR vers main quand la CI est verte et que ton rapport est publié, CI, construction et signature de l'APK par le workflow `android` du dépôt (le lancer ; le modifier seulement à ma demande).
 - À me demander : secrets réels, dépenses, envois ou publications externes, suppressions importantes, commande d'un appareil réel par un agent. Mes essais sur mon matériel n'ont besoin d'aucun accord.
 - Aucun secret ni donnée personnelle dans le dépôt (il est public).

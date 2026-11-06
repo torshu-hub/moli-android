@@ -1,0 +1,7 @@
+# ETAT — Moli OS Android
+
+- **Jalon** : mission 1 terminée (socle essayé sur la tablette, ok). Mission 2 non choisie. En cours : lot 1 resynchronisation avec l'officiel, lot 2 livraison de l'APK.
+- **Branche / PR** : `claude/pensive-brahmagupta-mbs5xd`, PR torshu-hub/moli-android#2 (fusionnée vers main).
+- **Décisions actives** : DECISIONS.md ; hébergement JNI repris de `moli-os-android@moli-beta2-code-24`, sans porte cookie ; identifiant `io.moli.android` (validé) ; écoute `0.0.0.0:8790` comme l'officiel (validé, accès depuis les autres appareils voulu) ; nouveau certificat de signature (validé) ; code de la maison choisi au premier démarrage, comme `MOLI_UI_PIN` (gardé, 6 nov.). Accès réseau sans code : on ne change rien, `[guard]` intouché (décidé le 6 nov.). **À reposer dans les cinq lignes de la mission Hyundai** : option `protected_devices` sur le verrouillage seulement.
+- **Preuves** : scripts/check.sh vert (dont le test `hosted`) ; CI check, audit et android vertes ; l'APK contient le moteur et ses 4 points d'entrée JNI ; constat réseau mesuré le 6 nov. (PR#2). Socle essayé sur la tablette (APK d'essai debug) : ok. Pas encore : APK signée (pas de PC avec keytool).
+- **Prochaine action** : lot 1 (resynchronisation avec rudy-io/moli-os), puis lot 2 (lien direct et fixe vers l'APK). Certificat : quand le propriétaire aura un PC.
