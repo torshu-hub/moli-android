@@ -1,3 +1,5 @@
+> Projet Moli OS Android : lire d'abord [PROJET.md](PROJET.md) (et DECISIONS.md), qui priment.
+
 # Moli OS — guide pour agents
 
 Ce fichier est lu par n'importe quel agent (Claude Code, Codex…). Rien ici ne suppose un agent particulier.
