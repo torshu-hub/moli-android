@@ -5,6 +5,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+# The code stays in main.rs (as upstream); a library too, for the Android host.
+autobins = false
+
+[lib]
+path = "src/main.rs"
+
+[[bin]]
+name = "moli-os"
+path = "src/cli.rs"
 
 [dependencies]
 moli-core.workspace = true
