@@ -13,6 +13,7 @@ use serde_json::json;
 
 use crate::caller::{Caller, Via};
 use crate::people::People;
+use crate::plan::PlanDir;
 use crate::session::{ClaimError, LoginError, Sessions};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -218,6 +219,10 @@ pub(crate) struct DecisionBody {
     approve: bool,
     /// The point the human saw on the card.
     point: PointId,
+    /// The house's code, typed for this very order: some want it each time
+    /// (`[guard] code_each_time`), an open session or not.
+    #[serde(default)]
+    pin: Option<String>,
 }
 
 /// Approve or deny a held order: a human session (PIN) is required, even
@@ -230,17 +235,25 @@ pub(crate) async fn decide(
     headers: HeaderMap,
     Json(body): Json<DecisionBody>,
 ) -> Response {
-    let origin = if humans.is_human(&headers, &caller.key) {
-        Origin::Ui
-    } else {
-        Origin::Api
-    };
+    let human = humans.is_human(&headers, &caller.key);
+    let origin = if human { Origin::Ui } else { Origin::Api };
     let actor = Some(caller.describe());
+    // Checked now, behind the same lockout as signing in, and only for a
+    // person in a session: without one, the decision is refused anyway, and
+    // this route must not become a place to try codes.
+    let code_typed = match body.pin.as_deref() {
+        Some(pin) if body.approve && human => match humans.verify(pin, &caller) {
+            Ok(()) => true,
+            Err(e) => return crate::people_api::login_error(e, "serveur.code.incorrect"),
+        },
+        _ => false,
+    };
     match hub
-        .resolve_approval(id, &body.point, body.approve, origin, actor)
+        .resolve_approval_with_code(id, &body.point, body.approve, origin, actor, code_typed)
         .await
     {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e @ ApprovalError::CodeNeeded) => error(StatusCode::UNAUTHORIZED, &e.to_string()),
         Err(e @ ApprovalError::HumanOnly) => error(StatusCode::FORBIDDEN, &e.to_string()),
         Err(e @ (ApprovalError::Unknown | ApprovalError::Expired)) => {
             error(StatusCode::GONE, &e.to_string())
@@ -257,8 +270,9 @@ pub(crate) fn command_status(e: &CommandError) -> StatusCode {
         CommandError::ReadOnly => StatusCode::FORBIDDEN,
         CommandError::Invalid(_) => StatusCode::UNPROCESSABLE_ENTITY,
         CommandError::DriverUnavailable | CommandError::Busy => StatusCode::SERVICE_UNAVAILABLE,
-        CommandError::Timeout => StatusCode::GATEWAY_TIMEOUT,
-        CommandError::Driver(_) => StatusCode::BAD_GATEWAY,
+        CommandError::Timeout | CommandError::OutcomeUnknown => StatusCode::GATEWAY_TIMEOUT,
+        CommandError::Driver(_) | CommandError::DriverRefused(_) => StatusCode::BAD_GATEWAY,
+        CommandError::Mirror => StatusCode::CONFLICT,
     }
 }
 
@@ -281,6 +295,67 @@ pub(crate) async fn set_label(
         Err(e @ LabelError::Guarded(_)) => error(StatusCode::FORBIDDEN, &e.to_string()),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct PointName {
+    name: String,
+}
+
+/// A point's own name (a power strip's outlet): `{"name": "Écran"}`, `""`
+/// forgets it. A name `home.json` gives it (`outlets`) counts as one: an
+/// agent may not cover it with its own.
+pub(crate) async fn set_point_label(
+    State(hub): State<Hub>,
+    Extension(humans): Humans,
+    Extension(HomeFile(home)): Extension<HomeFile>,
+    caller: Caller,
+    Path((id, key)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(body): Json<PointName>,
+) -> Response {
+    let origin = origin(&hub, &headers, &humans, &caller);
+    let actor = journal_actor(origin, None, &caller);
+    let named_elsewhere = match &home {
+        Some(path) => named_in_home(path, &id, &key).await,
+        None => false,
+    };
+    match hub
+        .set_point_label(
+            &DeviceId::from(id),
+            &key,
+            &body.name,
+            named_elsewhere,
+            origin,
+            actor,
+        )
+        .await
+    {
+        Ok(label) => Json(label).into_response(),
+        Err(LabelError::UnknownDevice) => error(StatusCode::NOT_FOUND, "unknown device"),
+        Err(LabelError::UnknownPoint) => error(StatusCode::NOT_FOUND, "unknown point"),
+        Err(e @ LabelError::Guarded(_)) => error(StatusCode::FORBIDDEN, &e.to_string()),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+/// `home.json` names this point (`outlets.<id>.<key>`, a non-empty name).
+/// A file that cannot be read or parsed counts as a name: an agent then
+/// waits for a person rather than guess.
+async fn named_in_home(path: &std::path::Path, id: &str, key: &str) -> bool {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
+    };
+    let Ok(home) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return true;
+    };
+    home.get("outlets")
+        .and_then(|o| o.get(id))
+        .and_then(|d| d.get(key))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|name| !name.trim().is_empty())
 }
 
 // ---- human sessions ---------------------------------------------------------
@@ -311,6 +386,9 @@ pub(crate) async fn session(
         "who": who,
         // May choose the code without the current one (`PUT /api/session/pin`).
         "owner": owner,
+        // The Atelier (every device, raw): owners only, or everyone in a
+        // house that has no owner yet.
+        "atelier": owner || (!persons.has_owner() && !humans.has_owners()),
         // A new house: the installation code (logs) chooses the first code.
         "setup": humans.setup_pending(),
         // The shortest code this house accepts.
@@ -633,11 +711,12 @@ pub(crate) async fn history(
     }
 }
 
-/// Hours → ms, clamped to [1 min, 1 year].
+/// Hours → ms, clamped to [1 min, 20 years] (the points kept for ever,
+/// hour by hour, go that far back; the others simply have nothing there).
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub(crate) fn window_ms(hours: f64) -> u64 {
     let hours = if hours.is_finite() { hours } else { 24.0 };
-    (hours.clamp(1.0 / 60.0, 24.0 * 366.0) * 3_600_000.0) as u64
+    (hours.clamp(1.0 / 60.0, 24.0 * 366.0 * 20.0) * 3_600_000.0) as u64
 }
 
 // ---- family dashboard layout --------------------------------------------------
@@ -645,27 +724,52 @@ pub(crate) fn window_ms(hours: f64) -> u64 {
 #[derive(Clone)]
 pub(crate) struct HomeFile(pub(crate) Option<std::path::PathBuf>);
 
-/// The dashboard layout; `{}` (automatic layout) when there is none.
-pub(crate) async fn home(Extension(HomeFile(path)): Extension<HomeFile>) -> Response {
-    let Some(path) = path else {
-        return Json(json!({})).into_response();
-    };
-    match tokio::fs::read(&path).await {
-        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
-            // The house's position is not the dashboard's business (a guest reads this too).
-            Ok(mut layout) => {
-                if let Some(root) = layout.as_object_mut() {
-                    root.remove("location");
+/// The dashboard layout; `{}` (automatic layout) when there is none. Each
+/// room says whether it is outside (`rooms[].outside`, see `outside.rs`).
+pub(crate) async fn home(
+    State(hub): State<Hub>,
+    caller: Caller,
+    Extension(HomeFile(path)): Extension<HomeFile>,
+    Extension(PlanDir(dir)): Extension<PlanDir>,
+) -> Response {
+    let mut layout = match &path {
+        None => serde_json::Map::new(),
+        Some(path) => match tokio::fs::read(path).await {
+            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Ok(serde_json::Value::Object(layout)) => layout,
+                // Not an object: served as it is, nothing to say about rooms.
+                Ok(other) => return Json(other).into_response(),
+                Err(e) => {
+                    return error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &format!("home.json: {e}"),
+                    );
                 }
-                Json(layout).into_response()
-            }
-            Err(e) => error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("home.json: {e}"),
-            ),
+            },
+            Err(_) => serde_json::Map::new(),
         },
-        Err(_) => Json(json!({})).into_response(),
-    }
+    };
+    // The house's position is not the dashboard's business (a guest reads this too).
+    layout.remove("location");
+
+    let plan = match &dir {
+        Some(dir) => tokio::fs::read(dir.join("plan.json"))
+            .await
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok()),
+        None => None,
+    };
+    // A guest learns no room beyond the devices it sees.
+    let devices = match caller.person.as_ref().filter(|p| p.is_guest()) {
+        Some(guest) => guest.guest_view(&hub).0.devices,
+        None => hub.snapshot().devices,
+    };
+    let rooms: Vec<&str> = devices
+        .iter()
+        .filter_map(|d| d.label.room.as_deref().or(d.device.native_room.as_deref()))
+        .collect();
+    crate::outside::resolve(&mut layout, plan.as_ref(), rooms);
+    Json(serde_json::Value::Object(layout)).into_response()
 }
 
 // ---- published media ----------------------------------------------------------
@@ -989,6 +1093,104 @@ pub(crate) async fn set_energy_price(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PricesBody {
+    /// Every price of the house, each from its `since` (ms, UTC) on.
+    prices: Vec<PriceFrom>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PriceFrom {
+    since: u64,
+    price: f64,
+}
+
+/// More prices than this is not a house's history.
+const MAX_HOUSE_PRICES: usize = 200;
+
+/// `PUT /api/energy/prices`: the house's whole list of prices, edited from
+/// the dashboard (a past price corrected, one added with its date, one
+/// removed). The hours already filed take the new prices from the first
+/// change on. A person's gesture, like a new price.
+pub(crate) async fn set_energy_prices(
+    State(hub): State<Hub>,
+    Extension(Metered(energy)): Extension<Metered>,
+    Extension(humans): Humans,
+    Extension(persons): Extension<Arc<crate::people::People>>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(body): Json<PricesBody>,
+) -> Response {
+    let Some(energy) = energy else {
+        return error(
+            StatusCode::NOT_FOUND,
+            &moli_i18n::tr!("serveur.energie.absente"),
+        );
+    };
+    let human = humans.is_human(&headers, &caller.key);
+    if !human && !crate::people_api::is_owner(&caller, &humans, &persons, &headers) {
+        return error(
+            StatusCode::FORBIDDEN,
+            &moli_i18n::tr!("serveur.energie.prix_humain"),
+        );
+    }
+    // Without any price, every hour priced by the house would lose its cost.
+    if body.prices.is_empty() {
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &moli_i18n::tr!("serveur.energie.prix_liste_vide"),
+        );
+    }
+    let currency = energy.config().currency.as_str();
+    if body.prices.len() > MAX_HOUSE_PRICES
+        || body
+            .prices
+            .iter()
+            .any(|p| !(p.price.is_finite() && p.price > 0.0 && p.price <= MAX_HOUSE_PRICE))
+    {
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &moli_i18n::tr!("serveur.energie.prix_invalide", currency = currency),
+        );
+    }
+    let prices: Vec<moli_energy::HousePrice> = body
+        .prices
+        .iter()
+        .map(|p| moli_energy::HousePrice {
+            since: p.since,
+            price: p.price,
+        })
+        .collect();
+    // The list as it was, in the journal: a wrong edit can be put back.
+    let as_text = |list: &[moli_energy::HousePrice]| {
+        Value::Text(serde_json::to_string(list).unwrap_or_default().into())
+    };
+    let before = as_text(&energy.house_prices());
+    let after = as_text(&prices);
+    let count = prices.len();
+    match energy.set_house_prices(prices).await {
+        Ok(repriced) => {
+            let origin = if human {
+                Origin::Ui
+            } else {
+                origin(&hub, &headers, &humans, &caller)
+            };
+            hub.record_setting(
+                origin,
+                Some(caller.describe()),
+                "energy.prices",
+                Some(before),
+                after,
+            );
+            tracing::info!(client = %caller.describe(), count, repriced, "house prices edited");
+            Json(json!({ "prices": energy.house_prices(), "repriced": repriced })).into_response()
+        }
+        Err(e) => error(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
 pub(crate) struct SeriesQuery {
     step: moli_energy::Step,
     /// How many buckets back, the current one included.
@@ -1042,6 +1244,27 @@ mod home_tests {
     use super::*;
 
     #[tokio::test]
+    async fn an_outlet_named_in_home_json_counts_as_named() {
+        let dir = std::env::temp_dir().join(format!("moli-outlets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("home.json");
+        assert!(!named_in_home(&path, "m:strip", "on_1").await, "no file");
+        std::fs::write(
+            &path,
+            r#"{"outlets":{"m:strip":{"on_1":"Congélateur","on_2":" "}}}"#,
+        )
+        .unwrap();
+        assert!(named_in_home(&path, "m:strip", "on_1").await);
+        assert!(!named_in_home(&path, "m:strip", "on_2").await, "blank");
+        assert!(!named_in_home(&path, "m:strip", "on_3").await);
+        assert!(!named_in_home(&path, "m:other", "on_1").await);
+        // Unreadable: an agent waits for a person.
+        std::fs::write(&path, "{").unwrap();
+        assert!(named_in_home(&path, "m:strip", "on_1").await);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn the_layout_is_served_without_the_position_of_the_house() {
         let path = std::env::temp_dir().join(format!("moli-home-{}.json", std::process::id()));
         std::fs::write(
@@ -1049,7 +1272,18 @@ mod home_tests {
             r#"{"title":"Chez nous","location":{"place":"Lyon","latitude":45.76,"longitude":4.84}}"#,
         )
         .unwrap();
-        let response = home(Extension(HomeFile(Some(path.clone())))).await;
+        let hub = Hub::new(moli_runtime::HubOptions::default()).unwrap();
+        let response = home(
+            State(hub),
+            Caller {
+                via: crate::caller::Via::Lan,
+                key: "192.168.0.20".into(),
+                person: None,
+            },
+            Extension(HomeFile(Some(path.clone()))),
+            Extension(PlanDir(None)),
+        )
+        .await;
         let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
             .await
             .unwrap();

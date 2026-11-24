@@ -1,11 +1,13 @@
 // The family dashboard's model: the hub's live state (SSE, shared with the
 // Atelier), the home layout (/api/home), and gentle helpers on top.
 
+import { orderError } from './errors.js';
 import { hub, connect, login, decide, refreshSession } from '../../lib/hub.svelte.js';
 import { t, locale } from '../../lib/i18n.svelte.js';
-import { canWrite, powerPoint, knownDeviceKind, positionPoint, coverOrder, isValve } from './capabilities.js';
+import { canWrite, enumChoice, powerPoint, knownDeviceKind, positionPoint, coverOrder, isValve, impulsePoints, alarmPoint } from './capabilities.js';
+import { coverPositionTarget } from './cover-controls.js';
 
-export { hub, positionPoint, coverOrder };
+export { hub };
 
 export const home = $state({
   /** @type {any} layout from /api/home ({} = automatic) */
@@ -21,7 +23,7 @@ export const home = $state({
   now: Date.now(),
 });
 
-function readPref(key, fallback) {
+export function readPref(key, fallback) {
   try {
     return localStorage.getItem(key) ?? fallback;
   } catch {
@@ -82,6 +84,41 @@ export function since(id, key) {
   return hub.devices[id]?.state?.[key]?.ts ?? null;
 }
 
+/** A button's or a remote's last press (#198, #211): the most recent of its
+ *  `press` points (the driver says which, whatever the key: Z2M `action`, Hue
+ *  `button<N>`, Dirigera `button`, Tuya `switch_mode…`), with when. `button`:
+ *  the point's label when the device has several (a Hue dimmer), else null.
+ *  `null`: no button; `{ action: null }`: no press seen yet. */
+export function lastPress(d) {
+  const points = (d?.points ?? []).filter((p) => p.semantic === 'press' && !p.access?.write);
+  if (!points.length) return null;
+  let last = { action: null, ts: null, button: null };
+  for (const p of points) {
+    const action = value(d.id, p.key);
+    if (typeof action !== 'string' || !action) continue;
+    const ts = since(d.id, p.key);
+    if (last.action == null || (ts ?? 0) > (last.ts ?? 0)) {
+      last = { action, ts, button: points.length > 1 ? (p.label ?? p.key) : null };
+    }
+  }
+  return last;
+}
+
+// Each gesture named by the event that ends it: a Hue press sends
+// `initial_press` then `short_release` (or `long_press`, `repeat`… then
+// `long_release`), and the chip shows the last one, so a hold ends « maintenu ».
+const PRESSES = {
+  single: 'commun.appui.simple', click: 'commun.appui.simple', short_release: 'commun.appui.simple',
+  double: 'commun.appui.double', double_click: 'commun.appui.double', double_short_release: 'commun.appui.double',
+  triple: 'commun.appui.triple',
+  hold: 'commun.appui.maintenu', long: 'commun.appui.maintenu', press: 'commun.appui.maintenu',
+  long_press: 'commun.appui.maintenu', repeat: 'commun.appui.maintenu', long_release: 'commun.appui.maintenu',
+  initial_press: 'commun.appui.appui',
+  release: 'commun.appui.relache',
+};
+/** A press in words (« simple », « double », « maintenu »); any other, as told. */
+export const pressWord = (action) => (PRESSES[action] ? t(PRESSES[action]) : action);
+
 // What a sensor says, whatever its brand: Zigbee (`contact` true when
 // closed, `water_leak`), Tuya (`doorcontact_state` true when open,
 // `watersensor_state` « alarm », `pir` « pir », `battery_state` « low »).
@@ -96,9 +133,27 @@ export function doorOpen(id) {
   return typeof tuya === 'boolean' ? tuya : null;
 }
 
+/** A plant sensor: it reads how wet a pot's soil is (#163). */
+export const isPlant = (d) => Boolean(d?.points.some((p) => p.semantic === 'soil_moisture'));
+const pointWith = (d, semantic) => d?.points.find((p) => p.semantic === semantic)?.key;
+/** A plant's soil, in %, and whether it asks for water: its own alarm (`soil_dry`)
+ *  or the threshold set on the sensor (`soil_warning`). Never a leak, never an alert. */
+export function plantNeeds(d) {
+  const moisture = value(d.id, pointWith(d, 'soil_moisture'));
+  const dryKey = pointWith(d, 'soil_dry');
+  const warning = value(d.id, 'soil_warning');
+  const thirsty =
+    (dryKey != null && value(d.id, dryKey) === true) ||
+    (typeof moisture === 'number' && typeof warning === 'number' && moisture < warning);
+  return { moisture: typeof moisture === 'number' ? moisture : null, thirsty };
+}
 export const leak = (id) => value(id, 'water_leak') === true || value(id, 'watersensor_state') === 'alarm';
 
-export const motion = (id) => value(id, 'occupancy') === true || value(id, 'pir') === 'pir';
+/** Someone is there: any point the server reads as presence (`occupancy`,
+ *  `presence` of a mmWave radar, `motion`), whatever its key, or Tuya's `pir`. */
+export const motion = (id) =>
+  (device(id)?.points ?? []).some((p) => p.semantic === 'occupancy' && value(id, p.key) === true) ||
+  value(id, 'pir') === 'pir';
 
 /** A sensor's battery (not a phone's: it charges). */
 export function lowBattery(id) {
@@ -156,6 +211,20 @@ export function pending(id, point = null) {
   return key ? `${id}/${key}` in hub.pending : false;
 }
 
+/** A cover's position: the point whose semantic says so, or the legacy Tuya
+ *  reading (display only), never a point chosen by its name alone. */
+export function coverPosition(id) {
+  const point = positionPoint(device(id), true);
+  const reported = point ? value(id, point.key) : null;
+  return point?.kind?.type === 'numeric' && Number.isFinite(reported) && reported >= 0 && reported <= 100
+    ? reported : null;
+}
+
+/** The point a cover's position can be written to, if any (bounded by its range). */
+export function coverPositionKey(id) {
+  return coverPositionTarget(device(id))?.point?.key ?? null;
+}
+
 // ---- rooms ---------------------------------------------------------------------
 
 const norm = (s) =>
@@ -191,6 +260,10 @@ export const protectedRoom = (name) =>
  *  whether it is well (the « Parc » page). */
 export const watches = (d) => (d?.points ?? []).some((p) => p.semantic === 'alert');
 
+/** The security panels of the house, wherever they are (the dashboard, the
+ *  cameras' safety panel, their room). Hidden devices stay hidden. */
+export const alarmDevices = () => Object.values(hub.devices).filter((d) => !hidden(d.id) && deviceKind(d) === 'alarm');
+
 export function hidden(id) {
   return (home.config?.hidden ?? []).includes(id);
 }
@@ -201,15 +274,35 @@ export function quiet(id) {
   return (home.config?.quiet ?? []).includes(id);
 }
 
-/** A power strip's outlets, each its own pad: `home.json` `outlets`
- *  `{ "<id>": { "switch_1": "Écran", … } }`, in that order. */
+/** An outlet's switch: a numbered on/off point (`on_1`, `switch_2`, `state_l3`). */
+const OUTLET = /^(?:on|switch|state|outlet|relay)_l?(\d+)$/;
+const onOff = (p) => p.kind?.type === 'binary'
+  || (p.kind?.type === 'enum' && enumChoice(p.kind.values, 'on') && enumChoice(p.kind.values, 'off'));
+
+/** A power strip's outlets, each its own socket on the strip's tile. By
+ *  default, every writable numbered on/off point the device reports, when
+ *  there are two or more (a Meross MSS425's `on_1`…`on_5`), in their order,
+ *  named by their label.
+ *  `home.json` `outlets` `{ "<id>": { "on_1": "Écran", … } }` names them and
+ *  chooses which show, in that order; `{ "<id>": {} }`: a single switch.
+ *  A name the family gave on the dashboard (the device's label, `points`)
+ *  comes first. */
 export function outletsOf(id) {
   const names = home.config?.outlets?.[id];
   const d = device(id);
-  if (!names || !d) return [];
-  return Object.entries(names)
-    .filter(([key]) => d.points.some((p) => p.key === key && p.access?.write))
-    .map(([key, name]) => ({ key, name }));
+  if (!d) return [];
+  const given = d.label?.points ?? {};
+  if (names) {
+    return Object.entries(names)
+      .filter(([key]) => d.points.some((p) => p.key === key && p.access?.write))
+      .map(([key, name]) => ({ key, name: given[key] || name, fallback: name }));
+  }
+  const numbered = d.points
+    // An outlet the device has never reported is one it does not have (a double plug).
+    .filter((p) => p.access?.write && OUTLET.test(p.key) && onOff(p) && value(id, p.key) != null)
+    .map((p) => ({ key: p.key, name: given[p.key] || p.label || p.key, fallback: p.label || p.key, n: Number(OUTLET.exec(p.key)[1]) }))
+    .sort((a, b) => a.n - b.n);
+  return numbered.length >= 2 ? numbered.map(({ key, name, fallback }) => ({ key, name, fallback })) : [];
 }
 
 const LIGHTISH = /lumi|lamp|light|spot|plafon|applique|ampoule|globe|suspension|bureau|salon|cuisine|couloir|studio|véranda|veranda|entrée|chambre|toilette|combles|meuble|bulb|ceiling|desk|kitchen|hallway|bedroom|attic|fixture|lounge|éclairage|eclairage|néon|neon|\bleds?\b|veilleuse|guirlande|phare/i;
@@ -217,20 +310,40 @@ const LIGHTISH = /lumi|lamp|light|spot|plafon|applique|ampoule|globe|suspension|
 const NOT_LIGHT = /vmc|ventil|pompe|prise|chauffe|\bfan\b|pump|heater|outlet|socket/i;
 const has = (d, key, write = false) => d.points.some((p) => p.key === key && (!write || p.access?.write));
 
+/** A helper: a value Moli keeps for itself (`helpers` driver), never a plug. */
+export const isHelper = (d) => d?.manufacturer === 'Moli' && d?.model === 'Aide';
+
+/** A helper's icon, by its kind: a switch, a choice, a number or a text. */
+export function helperIcon(d) {
+  const kind = d?.points?.[0]?.kind?.type;
+  if (kind === 'binary') return 'toggle';
+  if (kind === 'enum') return 'helper-select';
+  if (kind === 'numeric') return 'helper-number';
+  return 'helper-text';
+}
+
+/** A helper that is a switch: a pad, Oui / Non. The others are chips. */
+export const isSwitchHelper = (d) => isHelper(d) && d.points?.some((p) => p.key === 'on');
+
 /** What a device is, for choosing how to show it. */
 export function deviceKind(d) {
   if (!d) return 'unknown';
+  if (isHelper(d)) return 'helper';
   if (has(d, 'progress') && has(d, 'nozzle_temperature')) return 'printer';
   // `camera` means « makes images »: a printer or a TV may too, and stays what it is.
   if (has(d, 'key', true)) return 'tv';
   if (d.camera) return 'camera';
   const known = knownDeviceKind(d);
   if (known) return known;
+  if (alarmPoint(d)) return 'alarm';
   if (has(d, 'clean') && has(d, 'battery')) return 'vacuum';
-  if (has(d, 'target_temperature') || isValve(d)) return 'climate';
+  // A heat pump, or a heating circuit (the three set points a thermostat or a valve never has together).
+  if (has(d, 'compressor_active') || (has(d, 'mode', true) && has(d, 'comfort_temperature') && has(d, 'reduced_temperature'))) return 'heating';
+  if (has(d, 'target_temperature') || (has(d, 'heat_setpoint') && has(d, 'cool_setpoint')) || isValve(d)) return 'climate';
   if (has(d, 'playing') && has(d, 'volume')) return 'speaker';
   if (positionPoint(d) || coverOrder(d) || has(d, 'percent_control'))
     return 'cover';
+  if (impulsePoints(d).length) return 'impulse';
   if (powerKey(d, false)) {
     if (isGroup(d)) return 'group';
     if (isFixture(d)) return 'light';
@@ -240,17 +353,23 @@ export function deviceKind(d) {
     if (d.id.startsWith('hue:') || LIGHTISH.test(name) || ['brightness', 'color_temp', 'color'].some((k) => has(d, k, true))) return 'light';
     return 'plug';
   }
+  // Its temperature is the pot's: it never counts as the room's.
+  if (isPlant(d)) return 'plant';
   return 'sensor';
 }
 
 /** Rooms with their devices sorted by kind, the layout's order first. */
 export function roomList() {
   const defs = home.config?.rooms ?? [];
-  const map = new Map(defs.map((r) => [r.name, []]));
+  // A room `/api/home` added (`added`: outside, not listed by the family)
+  // takes no place in the order: it comes with the other unlisted rooms.
+  const map = new Map(defs.filter((r) => !r.added).map((r) => [r.name, []]));
   // A fixture's bulbs and relay show inside it, not beside it.
   const inFixture = new Set(Object.values(hub.devices).filter(isFixture).flatMap((d) => d.members ?? []));
   for (const d of Object.values(hub.devices)) {
     if (hidden(d.id) || inFixture.has(d.id)) continue;
+    // A heat pump and its circuits live on the Chauffage page, not on a room's card.
+    if (deviceKind(d) === 'heating') continue;
     const room = roomOf(d);
     if (!room) continue;
     if (!map.has(room)) map.set(room, []);
@@ -267,10 +386,18 @@ export function roomList() {
         lights: by('light'),
         plugs: by('plug').filter((d) => !quiet(d.id)),
         covers: by('cover'),
+        impulses: by('impulse'),
         climates: by('climate'),
         media: by('tv', 'speaker'),
-        sensors: [...by('sensor', 'camera', 'printer'), ...by('plug').filter((d) => quiet(d.id))],
+        alarms: by('alarm'),
+        helpers: by('helper'),
+        sensors: [...by('sensor', 'plant', 'camera', 'printer'), ...by('plug').filter((d) => quiet(d.id))],
         lit: by('light').filter((d) => isOn(d.id)).length,
+        opened: by('cover').filter((d) => {
+          const pct = coverPosition(d.id);
+          return pct != null && pct > 0;
+        }).length,
+        coversUnknown: by('cover').filter((d) => coverPosition(d.id) == null).length,
       };
     });
 }
@@ -366,9 +493,8 @@ export async function setLook(lights, look, label) {
 }
 
 function humanError(message) {
-  if (/unreachable|injoignable|did not answer|no answer/i.test(message)) return t('commun.appareil_injoignable');
-  if (/read-only|lecture seule|cannot be set/i.test(message)) return t('commun.non_pilotable');
-  return message;
+  const e = orderError(message);
+  return e.key ? t(e.key) : e.text;
 }
 
 export function toggle(id, label, point = null) {
@@ -395,11 +521,11 @@ export async function confirmHeld(pin) {
   }
   if (held.custom) {
     home.held = null;
-    await held.custom();
+    await held.custom(held.freshPin ? pin : undefined);
     return null;
   }
-  await decide({ id: held.id, point: held.point }, true);
-  held.onApproved?.();
+  const done = await decide({ id: held.id, point: held.point }, true, pin);
+  if (done) held.onApproved?.();
   home.held = null;
   return null;
 }
@@ -417,7 +543,9 @@ export { refreshSession };
 
 export function num(v, digits = 0) {
   if (v == null || !Number.isFinite(Number(v))) return '—';
-  return Number(v).toLocaleString(locale(), { maximumFractionDigits: digits, minimumFractionDigits: digits });
+  // -0.2 rounded to 0 digits is « -0 »: a zero has no sign.
+  const n = Number(Number(v).toFixed(digits)) || 0;
+  return n.toLocaleString(locale(), { maximumFractionDigits: digits, minimumFractionDigits: digits });
 }
 
 export function clock(ts) {

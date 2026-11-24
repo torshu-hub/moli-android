@@ -19,12 +19,15 @@ use anyhow::{Context as _, bail};
 /// SQLite databases: copied through SQLite itself.
 const DATABASES: [&str; 2] = ["history.db", "energy.db"];
 /// Everything else worth keeping (missing ones are skipped).
-const FILES: [&str; 18] = [
+const FILES: [&str; 21] = [
     "moli.toml",
+    crate::managed_airzone::FILE,
+    crate::managed_devices::FILE,
     "plan.json",
     "phones.json",
     "former-emails.json",
     "secrets.enc",
+    "private-state.enc",
     "labels.toml",
     "home.json",
     "tuya.json",
@@ -132,11 +135,19 @@ pub fn restore(data_dir: &Path, dir: &Path, force: bool) -> anyhow::Result<()> {
         }
     }
     // An older backup has no authoritative cache. Keeping a newer sidecar
-    // would resurrect devices/readings instead of restoring its state.json.
-    let obsolete: Vec<_> = ["state.devices.json", "state.observations.json"]
-        .into_iter()
-        .filter(|name| !listed.contains_key(*name) && data_dir.join(name).exists())
-        .collect();
+    // would resurrect devices/readings or a private catalogue from another
+    // connection instead of restoring the old backup's actual state. A newer
+    // Airzone registry would also resurrect gateways or permissions.
+    let obsolete: Vec<_> = [
+        "state.devices.json",
+        "state.observations.json",
+        "private-state.enc",
+        crate::managed_airzone::FILE,
+        crate::managed_devices::FILE,
+    ]
+    .into_iter()
+    .filter(|name| !listed.contains_key(*name) && data_dir.join(name).exists())
+    .collect();
     let existing = names.iter().filter(|n| data_dir.join(n).exists()).count() + obsolete.len();
     if existing != 0 && !force {
         bail!(
@@ -202,6 +213,15 @@ mod tests {
         let observations =
             br#"{"version":2,"generation":[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"states":{}}"#;
         std::fs::write(data.join("state.observations.json"), observations).unwrap();
+        let private_state = b"opaque encrypted private-state snapshot";
+        std::fs::write(data.join("private-state.enc"), private_state).unwrap();
+        for name in [
+            "private-state.enc.lock",
+            "private-state.enc.lease",
+            "private-state.enc.tmp",
+        ] {
+            std::fs::write(data.join(name), b"not backed up").unwrap();
+        }
         std::fs::create_dir_all(data.join("plan")).unwrap();
         std::fs::write(data.join("plan").join("0123456789abcdef.png"), b"png").unwrap();
         std::fs::write(data.join("plan").join("notes.txt"), b"not a plan").unwrap();
@@ -223,6 +243,19 @@ mod tests {
             std::fs::read(fresh.join("state.observations.json")).unwrap(),
             observations
         );
+        assert_eq!(
+            std::fs::read(fresh.join("private-state.enc")).unwrap(),
+            private_state
+        );
+        for name in [
+            "private-state.enc.lock",
+            "private-state.enc.lease",
+            "private-state.enc.tmp",
+        ] {
+            assert!(!saved.join(name).exists());
+            assert!(!fresh.join(name).exists());
+            assert!(!known_name(name));
+        }
         assert_eq!(
             std::fs::read_to_string(fresh.join("labels.toml")).unwrap(),
             "x = 1\n"
@@ -292,6 +325,35 @@ mod tests {
         task.await.unwrap();
     }
 
+    #[test]
+    fn legacy_restore_clears_newer_airzone_registry_but_preserves_unrelated_omissions() {
+        let base = std::env::temp_dir().join(format!("moli-airzone-legacy-{}", std::process::id()));
+        let (data, saved, target) = (base.join("data"), base.join("saved"), base.join("target"));
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(data.join("labels.toml"), b"x = 1\n").unwrap();
+        backup(&data, &saved).unwrap();
+        let registry = target.join(crate::managed_airzone::FILE);
+        std::fs::write(&registry, b"newer registry").unwrap();
+        std::fs::write(target.join("secrets.enc"), b"keep unrelated omission").unwrap();
+        assert!(restore(&target, &saved, false).is_err());
+        assert!(registry.exists());
+        std::fs::write(saved.join("labels.toml"), b"damaged").unwrap();
+        assert!(restore(&target, &saved, true).is_err());
+        assert!(registry.exists());
+        std::fs::write(saved.join("labels.toml"), b"x = 1\n").unwrap();
+        restore(&target, &saved, true).unwrap();
+        assert!(
+            !registry.exists(),
+            "older backups must not revive newer gateway permissions"
+        );
+        assert_eq!(
+            std::fs::read(target.join("secrets.enc")).unwrap(),
+            b"keep unrelated omission"
+        );
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
     #[tokio::test]
     async fn restoring_a_legacy_backup_removes_only_absent_state_sidecars_after_validation() {
         let base = std::env::temp_dir().join(format!("moli-legacy-backup-{}", std::process::id()));
@@ -322,6 +384,7 @@ mod tests {
         let sidecars = [
             ("state.devices.json", definitions),
             ("state.observations.json", observations),
+            ("private-state.enc", b"newer private catalogue".to_vec()),
         ];
         for (name, content) in &sidecars {
             std::fs::write(target.join(name), content).unwrap();
@@ -349,6 +412,7 @@ mod tests {
         assert_eq!(std::fs::read(target.join("state.json")).unwrap(), old_state);
         assert!(!target.join("state.devices.json").exists());
         assert!(!target.join("state.observations.json").exists());
+        assert!(!target.join("private-state.enc").exists());
         assert_newer_cache(&target, None).await;
         assert_eq!(
             std::fs::read(target.join("unrelated.txt")).unwrap(),

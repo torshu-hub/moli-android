@@ -16,12 +16,15 @@ name = "moli-os"
 path = "src/cli.rs"
 
 [dependencies]
+moli-matter.workspace = true
 moli-core.workspace = true
 moli-i18n.workspace = true
 moli-runtime.workspace = true
 moli-voltalis.workspace = true
 moli-z2m.workspace = true
+moli-zigbee.workspace = true
 moli-zwave.workspace = true
+moli-rfxcom2mqtt.workspace = true
 moli-api.workspace = true
 moli-weather.workspace = true
 moli-hue.workspace = true
@@ -32,6 +35,9 @@ moli-host.workspace = true
 moli-history.workspace = true
 moli-profile.workspace = true
 moli-enedis.workspace = true
+moli-grdf.workspace = true
+moli-solcast.workspace = true
+moli-linky-tic.workspace = true
 moli-energy.workspace = true
 moli-tuya.workspace = true
 moli-reolink.workspace = true
@@ -44,17 +50,33 @@ moli-alexa.workspace = true
 moli-moonraker.workspace = true
 moli-frigate.workspace = true
 moli-philips.workspace = true
+moli-androidtv.workspace = true
+moli-appletv.workspace = true
 moli-melcloud.workspace = true
+moli-kasa.workspace = true
+moli-recycleapp.workspace = true
+moli-engie.workspace = true
 moli-tapo.workspace = true
+moli-lifx.workspace = true
+moli-govee.workspace = true
 moli-shelly.workspace = true
 moli-izypower.workspace = true
 moli-solarman.workspace = true
+moli-jackery.workspace = true
+moli-vicare.workspace = true
+moli-synology.workspace = true
+moli-proxmox.workspace = true
 moli-igd.workspace = true
+moli-freebox.workspace = true
 moli-ipp.workspace = true
+moli-alarm.workspace = true
 moli-helpers.workspace = true
 moli-demo.workspace = true
 jiff.workspace = true
 moli-lights.workspace = true
+moli-outdoor.workspace = true
+moli-scenes.workspace = true
+moli-heating.workspace = true
 moli-presence.workspace = true
 moli-telegram.workspace = true
 moli-phones.workspace = true
@@ -73,6 +95,10 @@ tokio-util.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# The fake Meross plug of the tests checks signatures like a real one.
+md-5.workspace = true
 
 [lints]
 workspace = true

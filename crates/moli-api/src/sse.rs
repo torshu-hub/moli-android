@@ -174,7 +174,9 @@ impl View {
             return Pass::Event;
         };
         let (device, moved) = match event {
-            Event::State { point, .. } => (point.split().map(|(id, _)| id), false),
+            Event::State { point, .. } | Event::Seen { point, .. } => {
+                (point.split().map(|(id, _)| id), false)
+            }
             Event::Availability { device, .. } => (Some(device.clone()), false),
             Event::ApprovalRequested { request } => {
                 (request.point.split().map(|(id, _)| id), false)
@@ -188,6 +190,7 @@ impl View {
             // A driver's state, a decision on a request: no room in them.
             Event::DriverStatus { .. }
             | Event::DriverRegistered { .. }
+            | Event::DriverUnregistered { .. }
             | Event::ApprovalResolved { .. }
             | Event::LayoutChanged {} => return Pass::Event,
             // The house's journal and notices are the household's.

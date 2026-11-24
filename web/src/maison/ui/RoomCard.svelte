@@ -1,14 +1,23 @@
 <script>
-  import { hub, value, act, toggle, isOn, powerKey, protectedRoom, num, nameOf, deviceKind, lampsOf, doorOpen, leak, motion, lowBattery, unpowered, isFixture, note, reachable, quiet, outletsOf } from '../lib/home.svelte.js';
+  import { hub, value, act, toggle, isOn, powerKey, protectedRoom, num, nameOf, deviceKind, lampsOf, doorOpen, leak, motion, lowBattery, unpowered, isFixture, note, reachable, quiet, outletsOf, plantNeeds, coverPosition, lastPress, pressWord, relative, home, isSwitchHelper, helperIcon } from '../lib/home.svelte.js';
+  import { onDestroy } from 'svelte';
   import { t } from '../../lib/i18n.svelte.js';
   import Icon from './Icon.svelte';
+  import { impulseIcon } from '../lib/icons.js';
   import LightTile from './LightTile.svelte';
   import ClimateCard from './ClimateCard.svelte';
   import ValveCard from './ValveCard.svelte';
+  import RadiatorTile from './RadiatorTile.svelte';
   import CoverTile from './CoverTile.svelte';
+  import ImpulseTile from './ImpulseTile.svelte';
+  import StripTile from './StripTile.svelte';
   import AmbiancePicker from './AmbiancePicker.svelte';
+  import { watts } from '../lib/energy-live.svelte.js';
+  import AlarmCard from './AlarmCard.svelte';
   import { phase, PHASES } from '../lib/printers.js';
-  import { canWrite, pointOf, isValve, climateKeys } from '../lib/capabilities.js';
+  import { canWrite, pointOf, climateKeys, impulsePoints } from '../lib/capabilities.js';
+  import { heatsOnly } from '../lib/radiator.js';
+  import { coverCommands } from '../lib/cover-controls.js';
   import { climateMode } from '../lib/climate.js';
 
   /** One room, compact: its temperature and a switch for its lights in the
@@ -65,12 +74,27 @@
     // Humidity has no universal norm (it depends on the room and the season): always blue.
     humidity: () => [null, 'cool'],
   };
-  const measure = (kind, x, label, text) => {
+  // Every sensor chip says which device tells it: « <name> : <value> ».
+  const said = (id, value) => t('commun.piece.mesure', { name: nameOf(id), value });
+  const measure = (kind, x, id, text) => {
     const [word, tone] = GRADES[kind](x);
-    return { tone, icon: kind, text, title: word ? `${label} : ${text} · ${t(word)}` : `${label} : ${text}` };
+    return { tone, icon: kind, text, title: word ? `${said(id, text)} · ${t(word)}` : said(id, text) };
   };
 
+  /** How long a press stays on show outside the « Capteurs » view. */
+  const PRESS_FRESH_MS = 10 * 60_000;
+
   function chips(d) {
+    // A helper that is no switch: its value, said with its name.
+    if (deviceKind(d) === 'helper') {
+      const key = d.points?.[0]?.key;
+      const v = key == null ? null : value(d.id, key);
+      const icon = helperIcon(d);
+      const helper = t('commun.piece.aide');
+      if (v == null || v === '') return every ? [{ tone: '', icon, text: '', title: `${nameOf(d.id)} · ${helper}`, helper: true }] : [];
+      const shown = typeof v === 'number' ? num(v) : String(v);
+      return [{ tone: '', icon, text: shown, title: `${said(d.id, shown)} · ${helper}`, helper: true }];
+    }
     // An appliance that is no button: what it draws, nothing when unplugged.
     if (quiet(d.id)) {
       if (d.online === false) return every ? [{ tone: '', icon: 'offline', text: t('commun.piece.hors_ligne', { name: nameOf(d.id) }) }] : [];
@@ -79,9 +103,21 @@
       return every ? [{ tone: '', icon: 'power', text: t('commun.piece.au_repos', { name: nameOf(d.id) }) }] : [];
     }
     // A silent sensor's last readings are old news: say it is silent.
-    if (d.online === false && deviceKind(d) === 'sensor') {
+    if (d.online === false && ['sensor', 'plant'].includes(deviceKind(d))) {
       const dead = lowBattery(d.id);
       return [{ tone: dead ? 'alert' : '', icon: dead ? 'battery-alert' : 'offline', text: t(dead ? 'commun.piece.pile_vide' : 'commun.piece.hors_ligne', { name: nameOf(d.id) }) }];
+    }
+    // A plant says its soil, and whether it is thirsty; its pot's air is no room's.
+    if (deviceKind(d) === 'plant') {
+      const { moisture, thirsty } = plantNeeds(d);
+      const shown = moisture == null ? '' : t('commun.pourcent', { n: num(moisture) });
+      const plant = thirsty
+        ? [{ tone: 'warm', icon: 'sprout', text: shown, title: t('commun.piece.plante_soif', { name: nameOf(d.id), n: shown }) }]
+        : every || moisture != null
+          ? [{ tone: 'good', icon: 'sprout', text: shown, title: t('commun.piece.plante', { name: nameOf(d.id), n: shown }) }]
+          : [];
+      if (lowBattery(d.id)) plant.push({ tone: 'alert', icon: 'battery-alert', text: t('commun.piece.pile_faible', { name: nameOf(d.id) }) });
+      return plant;
     }
     const out = [];
     const v = (k) => value(d.id, k);
@@ -89,18 +125,31 @@
     if (v('carbon_monoxide') === true) out.push({ tone: 'alert', icon: 'smoke', text: t('commun.capteur.monoxyde') });
     if (leak(d.id)) out.push({ tone: 'alert', icon: 'water-alert', text: t('commun.piece.fuite', { name: nameOf(d.id) }) });
     const open = doorOpen(d.id);
-    if (open === true) out.push({ tone: 'warm', icon: 'door-open', text: '', title: t('commun.piece.ouverte', { name: nameOf(d.id) }) });
-    else if (open === false) out.push({ tone: '', icon: 'door-closed', text: '', title: t('commun.piece.fermee', { name: nameOf(d.id) }) });
+    if (open === true) out.push({ tone: 'warm', icon: 'door-open', text: '', title: said(d.id, t('commun.piece.ouverte')) });
+    else if (open === false) out.push({ tone: '', icon: 'door-closed', text: '', title: said(d.id, t('commun.piece.fermee')) });
     // The temperature is the room's, in the head.
     const hum = v('humidity') ?? v('humidity_value') ?? v('va_humidity');
-    if (typeof hum === 'number') out.push(measure('humidity', hum, t('commun.capteur.humidite'), t('commun.pourcent', { n: num(hum) })));
+    if (typeof hum === 'number') out.push(measure('humidity', hum, d.id, t('commun.pourcent', { n: num(hum) })));
     const co2 = v('co2_value') ?? v('co2');
-    if (typeof co2 === 'number') out.push(measure('co2', co2, 'CO₂', `${num(co2)} ppm`));
+    if (typeof co2 === 'number') out.push(measure('co2', co2, d.id, `${num(co2)} ppm`));
     const co = v('co');
-    if (typeof co === 'number') out.push(measure('co', co, t('commun.capteur.monoxyde'), `${num(co)} ppm`));
+    if (typeof co === 'number') out.push(measure('co', co, d.id, `${num(co)} ppm`));
     const lx = v('illuminance') ?? v('illuminance_lux');
-    if (typeof lx === 'number') out.push({ tone: '', icon: 'sun', text: `${num(lx)} lx`, title: t('commun.piece.eclairement') });
-    if (motion(d.id)) out.push({ tone: 'warm', icon: 'walk', text: '', title: t('commun.piece.presence') });
+    if (typeof lx === 'number') out.push({ tone: '', icon: 'sun', text: `${num(lx)} lx`, title: said(d.id, `${num(lx)} lx`) });
+    if (motion(d.id)) out.push({ tone: 'warm', icon: 'walk', text: '', title: said(d.id, t('commun.piece.presence_vue')) });
+    // A button says its last press: shown while fresh, always among the sensors.
+    const press = lastPress(d);
+    if (press?.action) {
+      const fresh = press.ts != null && home.now - press.ts < PRESS_FRESH_MS;
+      if (fresh || every) {
+        const word = pressWord(press.action);
+        const when = relative(press.ts, home.now);
+        // A remote with several buttons says which one (« Bouton 2 · simple »).
+        const what = press.button ? `${press.button} · ${word}` : word;
+        const name = press.button ? `${nameOf(d.id)} · ${press.button}` : nameOf(d.id);
+        out.push({ tone: fresh ? 'warm' : '', icon: 'hand', text: when ? `${what} · ${when}` : what, title: t('commun.piece.dernier_appui', { name, action: word, when }) });
+      }
+    }
     if (lowBattery(d.id)) out.push({ tone: 'alert', icon: 'battery-alert', text: t('commun.piece.pile_faible', { name: nameOf(d.id) }) });
     if (deviceKind(d) === 'camera') out.push({ tone: 'cool', icon: 'cctv', text: nameOf(d.id), href: '#/cameras' });
     if (deviceKind(d) === 'printer') {
@@ -116,7 +165,7 @@
     return out;
   }
 
-  const sensorChips = $derived(room.sensors.flatMap(chips));
+  const sensorChips = $derived([...room.sensors, ...(room.helpers ?? []).filter((d) => !isSwitchHelper(d))].flatMap(chips));
   const lamps = $derived(lampsOf(room));
   let showLooks = $state(false);
 
@@ -124,7 +173,7 @@
 
   const roomTemperature = $derived.by(() => {
     const readings = [...room.sensors, ...room.climates]
-      .filter((d) => d.online !== false)
+      .filter((d) => d.online !== false && deviceKind(d) !== 'plant')
       // Tuya's Zigbee probes say `va_temperature`.
       .map((d) => {
         const key = ['temperature', 'temp_current', 'va_temperature'].find((key) => Number.isFinite(value(d.id, key)));
@@ -161,8 +210,10 @@
   function padIcon(d) {
     const kind = deviceKind(d);
     const name = (d.label?.name || d.native_name || '').toLowerCase();
+    if (kind === 'cover') return (coverPosition(d.id) ?? 0) > 0 ? 'shutter-open' : 'shutter';
     if (kind === 'tv') return 'tv';
     if (kind === 'speaker') return 'speaker';
+    if (kind === 'helper') return helperIcon(d);
     if (kind === 'plug') return /vmc|ventil|\bfan\b|exhaust/.test(name) ? 'fan' : 'socket';
     if (hasFan(d.id) || (isFixture(d) && d.members?.some(hasFan))) return 'ceiling-fan-light';
     if (/spot/.test(name)) return 'spotlight';
@@ -175,50 +226,106 @@
     return 'light';
   }
 
-  /** A strip's pad for all its outlets (`ALL`), then one per outlet. */
-  const ALL = '*';
-  const plugPads = (d) => {
-    const outlets = outletsOf(d.id);
-    if (!outlets.length) return [{ d, point: null }];
-    return [{ d, point: ALL, outlets }, ...outlets.map((o) => ({ d, point: o.key, name: o.name }))];
-  };
-  const litCount = (outlets, id) => outlets.filter((o) => isOn(id, o.key)).length;
-  const canTap = (d, point, outlets) => outlets
-    ? outlets.some((o) => canWrite(d, o.key))
-    : canWrite(d, point ?? powerKey(d));
+  /** A power strip gets its own tile, drawn: a socket per outlet. */
+  const strips = $derived(room.plugs.filter((d) => outletsOf(d.id).length));
+  const canTap = (d, point) => canWrite(d, point ?? powerKey(d));
 
-  /** The pads: lights, then TV and speakers, then plugs. */
+  /** A cover pad follows its tile's access rule: live, and the command it would
+   *  send is writable (any command when the position is unknown). */
+  const coverPadEnabled = (d) => {
+    if (!reachable(d.id) || hub.connected !== true) return false;
+    const pct = coverPosition(d.id);
+    return coverCommands(d).some(({ command, key, value }) => value && canWrite(d, key)
+      && (pct == null || command === (pct > 0 ? 'close' : 'open')));
+  };
+
+  /** A trigger device with one relay is a pad like the others (a tap sends the
+   *  pulse); with several relays it keeps its tile, one button per relay. */
+  const lonePulse = (d) => impulsePoints(d).length === 1;
+  const pulseTiles = $derived(room.impulses.filter((d) => !lonePulse(d)));
+
+  /** The pads: lights, then TV and speakers, then plugs, then covers, then
+   *  single-relay triggers. */
   const pads = $derived([
     ...room.lights.map((d) => ({ d, point: null })),
     ...room.media.map((d) => ({ d, point: deviceKind(d) === 'tv' ? 'power' : null, link: deviceKind(d) === 'speaker' ? '#/salon' : null })),
-    ...room.plugs.flatMap(plugPads),
+    ...room.plugs.filter((d) => !outletsOf(d.id).length).map((d) => ({ d, point: null })),
+    ...room.covers.map((d) => ({ d, point: null, isCover: true })),
+    ...room.impulses.filter(lonePulse).map((d) => ({ d, point: impulsePoints(d)[0].key, isPulse: true })),
+    // A helper switch: a pad, Oui / Non (« Lave-linge en cours »).
+    ...(room.helpers ?? []).filter(isSwitchHelper).map((d) => ({ d, point: 'on' })),
   ]);
+
+  // ---- single-relay triggers: no state to show, only an order and its outcome ----------
+
+  /** Per device: 'sending', then 'sent', 'held' or 'error' for a few seconds. */
+  let pulses = $state({});
+  const pulseTimers = new Map();
+  onDestroy(() => pulseTimers.forEach(clearTimeout));
+  const pulseEnabled = (d, key) => reachable(d.id) && hub.connected === true && canWrite(d, key) && pulses[d.id] !== 'sending';
+  async function pulse(d, key) {
+    if (!pulseEnabled(d, key)) return;
+    clearTimeout(pulseTimers.get(d.id));
+    pulses[d.id] = 'sending';
+    const result = await act(`${d.id}/${key}`, 'cycle', t('commun.action', { label: nameOf(d.id), action: t('commun.volet.impulsion').toLowerCase() }));
+    pulses[d.id] = result === 'ok' ? 'sent' : result;
+    pulseTimers.set(d.id, setTimeout(() => {
+      delete pulses[d.id];
+      pulseTimers.delete(d.id);
+    }, 4000));
+  }
 
   let open = $state(null);
 
-  function stateOf(d, point, outlets) {
+  /** What a device measuring its own draw (a plug with a meter) pulls now, in W;
+   *  null when it measures nothing or has no reading. */
+  function drawOf(d) {
+    const p = d.points?.find((q) => q.semantic === 'power' && q.kind?.type === 'numeric' && (q.unit === 'W' || q.unit === 'kW'));
+    const v = p ? value(d.id, p.key) : null;
+    if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+    return p.unit === 'kW' ? v * 1000 : v;
+  }
+
+  function stateOf(d, point, isCover) {
+    if (isCover) {
+      if (!reachable(d.id)) return t('commun.piece.injoignable');
+      const pct = coverPosition(d.id);
+      if (pct == null) return '';
+      const shown = Math.max(0, Math.min(100, Math.round(Number(pct))));
+      return shown === 0 ? t('commun.volet.ferme') : shown === 100 ? t('commun.volet.ouvert') : t('commun.volet.ouvert_a', { pct: num(shown) });
+    }
     if (unpowered(d.id) && !isFixture(d)) return t('commun.piece.coupee');
     if (!reachable(d.id)) return t('commun.piece.injoignable');
-    if (outlets) return t('commun.piece.prises_allumees', { on: litCount(outlets, d.id), count: outlets.length });
     if (deviceKind(d) === 'speaker') return value(d.id, 'playing') === true ? t('commun.piece.lecture_en_cours') : t('commun.piece.a_l_arret');
+    if (deviceKind(d) === 'helper') return t(isOn(d.id, point) ? 'commun.oui' : 'commun.non');
     if (!isOn(d.id, point)) return t('commun.piece.eteinte');
+    const draw = point ? null : drawOf(d);
+    if (draw != null) return t('commun.piece.allumee_conso', { watts: watts(draw) });
     const b = value(d.id, 'brightness');
     return typeof b === 'number' && fine(d) ? t('commun.pourcent', { n: Math.round(b) }) : t('commun.piece.allumee');
   }
 
-  function tap(d, point, outlets, name) {
-    if (!canTap(d, point, outlets)) return;
+  function tap(d, point, isCover) {
+    if (isCover) {
+      const pct = coverPosition(d.id);
+      // Without a measured position, the pad opens the tile: open, stop, close.
+      if (pct == null) {
+        open = d.id;
+        return;
+      }
+      const isOpen = pct > 0;
+      const action = coverCommands(d).find((c) => c.command === (isOpen ? 'close' : 'open'));
+      if (!action?.value || !canWrite(d, action.key)) return;
+      const actionLabel = t(isOpen ? 'commun.volet.fermer' : 'commun.volet.ouvrir').toLowerCase();
+      act(`${d.id}/${action.key}`, action.value, t('commun.action', { label: nameOf(d.id), action: actionLabel }));
+      return;
+    }
+    if (!canTap(d, point)) return;
     if (unpowered(d.id) && !isFixture(d)) {
       note(t('commun.lampe.coupee_note', { label: nameOf(d.id) }));
       return;
     }
-    if (outlets) {
-      // All on → all off; otherwise everything on.
-      const on = litCount(outlets, d.id) < outlets.length;
-      for (const o of outlets) if (canWrite(d, o.key) && isOn(d.id, o.key) !== on) act(`${d.id}/${o.key}`, on, `${nameOf(d.id)} · ${o.name}`);
-      return;
-    }
-    toggle(d.id, name ? `${nameOf(d.id)} · ${name}` : nameOf(d.id), point);
+    toggle(d.id, nameOf(d.id), point);
   }
 
   function climateState(on, mode) {
@@ -231,10 +338,19 @@
 
 <section class="card room">
   <div class="head">
-    <span class="room-icon" class:lit={room.lit}><Icon name={room.icon} size={22} /></span>
+    <span class="room-icon" class:lit={room.lit || room.opened}><Icon name={room.icon} size={22} /></span>
     <div class="title">
       <h2>{room.name}{#if locked}<span class="lock" title={t('commun.piece.protegee_titre')}><Icon name="lock" size={13} /></span>{/if}</h2>
-      <span class="muted">{room.lit ? t('commun.piece.allumees', { count: room.lit }) : t('commun.piece.tout_eteint')}</span>
+      <span class="muted">
+        {room.lit ? t('commun.piece.allumees', { count: room.lit }) : t('commun.piece.tout_eteint')}
+        {#if room.opened}
+          · {t('commun.piece.ouverts', { count: room.opened })}
+        {:else if room.covers.length && !room.coversUnknown}
+          · {t('commun.piece.tout_ferme')}
+        {:else if room.covers.length}
+          · {t('commun.volet.position_inconnue')}
+        {/if}
+      </span>
     </div>
     {#if temp != null}
       <span class="temp {roomTemperature.unit === '°C' ? tone(temp) : ''}" title={t('commun.piece.temperature')}><b class="num">{num(temp, 1)}{roomTemperature.unit}</b>{#if roomTemperature.unit === '°C'}<i class="gauge"><i style="left:{gaugeAt(temp)}%"></i></i>{/if}</span>
@@ -255,21 +371,29 @@
 
   {#if pads.length}
     <div class="pads" class:icons>
-      {#each pads as { d, point, link, outlets, name } (`${d.id}/${point}`)}
-        {@const lit = link ? value(d.id, 'playing') === true : outlets ? litCount(outlets, d.id) > 0 : isOn(d.id, point)}
-        {@const cut = unpowered(d.id) && !isFixture(d)}
-        {@const more = !link && !point && !cut && (fine(d) || hasFan(d.id) || (isFixture(d) && d.members?.some(hasFan)))}
-        {@const label = name ?? nameOf(d.id)}
+      {#each pads as { d, point, link, isCover, isPulse } (`${d.id}/${point}`)}
+        {@const coverPct = isCover ? coverPosition(d.id) : null}
+        {@const lit = isPulse ? pulses[d.id] === 'sending' || pulses[d.id] === 'sent' : isCover ? (coverPct ?? 0) > 0 : link ? value(d.id, 'playing') === true : isOn(d.id, point)}
+        {@const cut = !isPulse && unpowered(d.id) && !isFixture(d)}
+        {@const more = isPulse ? false : isCover ? true : !link && !point && !cut && (fine(d) || hasFan(d.id) || (isFixture(d) && d.members?.some(hasFan)))}
+        {@const label = nameOf(d.id)}
+        {@const coverCommand = coverPct != null ? coverCommands(d).find((c) => c.command === (lit ? 'close' : 'open'))?.command : undefined}
         <div class="pad-wrap">
           {#if link}
             <a class="pad" class:on={lit} href={link} title={label} aria-label={t('commun.action', { label, action: stateOf(d, point) })}>
               <span class="ico"><Icon name={padIcon(d)} size={icons ? 22 : 18} /></span>
               {#if !icons}<b>{label}</b><small>{stateOf(d, point)}</small>{/if}
             </a>
+          {:else if isPulse}
+            {@const said = t(`commun.impulsion.etat.${pulses[d.id] ?? 'repos'}`)}
+            <button class="pad" class:on={lit} class:off-grid={!reachable(d.id)} disabled={!pulseEnabled(d, point)} onclick={() => pulse(d, point)} title={[label, said].join(' · ')} data-pulse={pulses[d.id] ?? 'idle'} aria-label={t('commun.action', { label, action: t('commun.volet.impulsion').toLowerCase() })}>
+              <span class="ico"><Icon name={reachable(d.id) ? impulseIcon(label) : 'offline'} size={icons ? 22 : 18} /></span>
+              {#if !icons}<b>{label}</b><small>{said}</small>{/if}
+            </button>
           {:else}
-            <button class="pad" class:on={lit} class:cut class:off-grid={!reachable(d.id) && !cut} disabled={!canTap(d, point, outlets)} onclick={() => tap(d, point, outlets, name)} title={label} aria-pressed={lit} aria-label={t('commun.action', { label, action: stateOf(d, point, outlets) })}>
-              <span class="ico"><Icon name={outlets ? 'power' : padIcon(d)} size={icons ? 22 : 18} /></span>
-              {#if !icons}<b>{label}</b><small>{stateOf(d, point, outlets)}</small>{/if}
+            <button class="pad" class:on={lit} class:cut class:helper={deviceKind(d) === 'helper'} class:off-grid={!reachable(d.id) && !cut} disabled={isCover ? !coverPadEnabled(d) : !canTap(d, point)} onclick={() => tap(d, point, isCover)} title={deviceKind(d) === 'helper' ? `${label} · ${t('commun.piece.aide')}` : isCover || (lit && !point && drawOf(d) != null) ? [label, stateOf(d, point, isCover)].filter(Boolean).join(' · ') : label} data-cover-command={coverCommand} aria-pressed={lit} aria-label={t('commun.action', { label, action: stateOf(d, point, isCover) })}>
+              <span class="ico"><Icon name={padIcon(d)} size={icons ? 22 : 18} /></span>
+              {#if !icons}<b>{label}</b><small>{stateOf(d, point, isCover)}</small>{/if}
             </button>
           {/if}
           {#if more}
@@ -281,15 +405,32 @@
       {/each}
     </div>
     {#if open && pads.some((p) => p.d.id === open)}
-      <LightTile id={open} dimmer />
+      {@const pad = pads.find((p) => p.d.id === open)}
+      {#if pad?.isCover}
+        <CoverTile id={open} />
+      {:else}
+        <LightTile id={open} dimmer />
+      {/if}
     {/if}
   {/if}
 
-  {#each room.covers as d (d.id)}
-    <CoverTile id={d.id} {icons} />
+  {#each room.alarms as d (d.id)}
+    <AlarmCard id={d.id} compact />
+  {/each}
+
+  {#each strips as d (d.id)}
+    <StripTile id={d.id} {icons} />
+  {/each}
+
+  {#each pulseTiles as d (d.id)}
+    <ImpulseTile id={d.id} {icons} />
   {/each}
 
   {#each room.climates as d (d.id)}
+    {#if heatsOnly(d)}
+      <RadiatorTile id={d.id} {icons} open={openClim === d.id} onopen={() => (openClim = openClim === d.id ? null : d.id)} />
+      {#if openClim === d.id}<ValveCard id={d.id} name={nameOf(d.id)} bare />{/if}
+    {:else}
     {@const keys = climateKeys(d)}
     {@const mode = pointOf(d, keys.mode) ? value(d.id, keys.mode) : null}
     {@const on = pointOf(d, 'on') ? value(d.id, 'on') : mode == null ? null : mode !== 'off'}
@@ -304,7 +445,8 @@
       <span class="state">{climateState(on, mode)}</span>
     </button>
     {#if openClim === d.id}
-      {#if isValve(d)}<ValveCard id={d.id} name={nameOf(d.id)} />{:else}<ClimateCard id={d.id} name={nameOf(d.id)} />{/if}
+      <ClimateCard id={d.id} name={nameOf(d.id)} />
+    {/if}
     {/if}
   {/each}
 
@@ -314,7 +456,7 @@
         {#if c.href}
           <a class="chip {c.tone}" href={c.href} title={c.title ?? c.text}><Icon name={c.icon} size={15} />{c.text}</a>
         {:else}
-          <span class="chip {c.tone}" title={c.title ?? c.text}><Icon name={c.icon} size={c.text ? 15 : 18} label={c.text ? null : c.title} />{c.text}</span>
+          <span class="chip {c.tone}" class:helper={c.helper} title={c.title ?? c.text}><Icon name={c.icon} size={c.text ? 15 : 18} label={c.text ? null : c.title} />{c.text}</span>
         {/if}
       {/each}
     </div>
@@ -532,6 +674,14 @@
     align-content: center;
   }
 
+  /* A helper is no device: a value Moli keeps. A thin dashed line in the
+     theme's warm accent, like a draft. */
+  .pad.helper,
+  .chip.helper {
+    outline: 1px dashed color-mix(in srgb, var(--warm) 70%, transparent);
+    outline-offset: -1px;
+  }
+
   .pad.on {
     background: linear-gradient(155deg, var(--warm-soft) 0%, var(--surface) 85%);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warm) 30%, transparent);
@@ -561,7 +711,7 @@
 
   .pad.on .ico {
     background: var(--warm);
-    color: #fff;
+    color: var(--warm-deep);
   }
 
   .pad b {
@@ -602,7 +752,7 @@
 
   .more.open {
     background: var(--warm);
-    color: #fff;
+    color: var(--warm-deep);
   }
 
   /* A clim, on one line. */

@@ -1,11 +1,18 @@
 <script>
   import { onMount } from 'svelte';
-  import { hub, home, value, relative } from '../lib/home.svelte.js';
+  import { hub, home, value, relative, nameOf } from '../lib/home.svelte.js';
+  import { nasGroups, parts } from '../lib/nas.js';
   import { t, locale } from '../../lib/i18n.svelte.js';
   import Icon from '../ui/Icon.svelte';
   import Gauge from '../ui/infra/Gauge.svelte';
   import Spark from '../ui/infra/Spark.svelte';
+  import HistoryChart from '../ui/HistoryChart.svelte';
   import PcCard from '../ui/infra/PcCard.svelte';
+  import NasCard from '../ui/infra/NasCard.svelte';
+  import ProxmoxCard from '../ui/infra/ProxmoxCard.svelte';
+  import { proxmoxNodes, proxmoxIssues } from '../lib/proxmox.js';
+  import BoxCard from '../ui/infra/BoxCard.svelte';
+  import { boxIssues, reader } from '../lib/box.js';
 
   /** The house's machines, the digital side of « is everything fine at
    *  home? »: the server (live from Moli), its disks and containers (the host
@@ -32,7 +39,12 @@
   const server = $derived(devices.find((d) => d.model === 'Serveur de la maison'));
   const pcs = $derived(devices.filter((d) => d.model === 'Ordinateur'));
   const box = $derived(devices.find((d) => d.points.some((p) => p.key === 'external_ip')));
+  // The internet box, from the points home.json names (`infra.box`, lib/box.js).
+  const boxCfg = $derived(home.config?.infra?.box ?? null);
+  const nases = $derived(nasGroups(devices));
   const sv = (k) => (server ? value(server.id, k) : null);
+  // Proxmox nodes (the `proxmox` driver): their parts and their problems.
+  const nodes = $derived(proxmoxNodes(devices));
 
   // ---- words and numbers ----
   const GB = 1024 ** 3;
@@ -70,9 +82,28 @@
       else if (home.now - b.at > 36 * 3_600_000) out.push(t('systeme.infra.alerte.sauvegarde_ancienne', { label: b.label, days: Math.round((home.now - b.at) / 86_400_000) }));
     }
     if (server && server.online === false) out.push(t('systeme.infra.alerte.serveur'));
+    // A NAS that says something is wrong, part by part. One that does not answer is not an alert: it may sleep on purpose (its card says « off »).
+    for (const g of nases) {
+      if (value(g.nas.id, 'up') === false) continue;
+      for (const d of parts(g)) {
+        if (value(d.id, 'problem') === true) out.push(t('systeme.infra.alerte.nas', { name: nameOf(d.id), detail: value(d.id, 'detail') || '—' }));
+      }
+    }
+    // A Proxmox part in trouble, in the driver's words.
+    for (const g of nodes) {
+      for (const p of proxmoxIssues(g, value)) out.push(t('systeme.infra.alerte.proxmox', { name: nameOf(p.id), detail: p.detail || '—' }));
+    }
+    // The box: a hot sensor, a fast fan, a degraded array, a full disk.
+    out.push(...boxIssues(boxCfg, reader(value), t));
     return out;
   });
   const stale = $derived(infra && home.now - infra.ts > 5 * 60_000);
+  // The last day of each Proxmox server's guests, as charts (8 at most a chart).
+  const guestCharts = $derived(
+    nodes
+      .filter((g) => g.guests.length)
+      .map((g) => ({ instance: g.instance, ids: g.guests.slice(0, 8).map((d) => d.id) })),
+  );
 </script>
 
 <div class="infra">
@@ -95,6 +126,10 @@
   {/if}
 
   <div class="grid">
+    {#each nodes as group (group.instance)}
+      <ProxmoxCard {group} />
+    {/each}
+
     {#if server}
       <section class="card server">
         <div class="card-head">
@@ -121,6 +156,7 @@
       </section>
     {/if}
 
+    {#if !(infraMissing && nodes.length)}
     <section class="card">
       <div class="card-head">
         <h2><Icon name="docker" size={18} />{t('systeme.infra.conteneurs')}</h2>
@@ -158,6 +194,7 @@
         {#if stale}<p class="muted small">{t('systeme.infra.releve_ancien', { when: relative(infra.ts, home.now) })}</p>{/if}
       {/if}
     </section>
+    {/if}
 
     {#if infra}
       <section class="card">
@@ -185,9 +222,29 @@
       </section>
     {/if}
 
+    {#each nases as group (group.instance)}
+      <NasCard {group} />
+    {/each}
+
     {#each pcs as pc (pc.id)}
       <PcCard {pc} />
     {/each}
+
+    {#if boxCfg}
+      <BoxCard box={boxCfg} />
+    {/if}
+
+    {#each guestCharts as c (c.instance)}
+      <HistoryChart title={t('systeme.infra.historique.processeur')} minutes={1440} points={c.ids.map((id) => `${id}/cpu`)} />
+      <HistoryChart title={t('systeme.infra.historique.memoire')} minutes={1440} points={c.ids.map((id) => `${id}/memory`)} />
+    {/each}
+    {#if boxCfg?.down || boxCfg?.up}
+      <HistoryChart
+        title={t('systeme.infra.historique.debit', { box: boxCfg.name ?? t('systeme.infra.box.titre') })}
+        minutes={1440}
+        points={[boxCfg.down, boxCfg.up].filter(Boolean)}
+      />
+    {/if}
 
     {#if box}
       <section class="card">

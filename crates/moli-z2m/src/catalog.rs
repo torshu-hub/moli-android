@@ -5,13 +5,15 @@
 //! of the ~4 000 Zigbee devices Z2M knows, without one line of
 //! device-specific code.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use moli_core::color::{hex_to_xy, xy_to_hex};
 use moli_core::{Access, Device, DeviceId, InstanceId, Kind, PointSpec, Semantic, Unit, Value};
 use serde::Deserialize;
 use serde_json::{Map, Value as Json};
+
+use crate::flame::{FLAME, Frame, NO_EFFECT};
 
 /// Z2M `access` bitmask.
 const ACCESS_STATE: u64 = 1;
@@ -34,7 +36,16 @@ struct Codec {
     /// The colour people pick (« #rrggbb »), sent to the lamp as CIE xy and
     /// read back from its `color {x, y}`, as the Hue driver does.
     xy_hex: bool,
+    /// A relay wired as a trigger (a gate, a garage door): its point is an
+    /// order, never a state. The wire value that fires it (`"ON"`).
+    impulse: Option<Json>,
+    /// A reading converted on its way in (a wind in m/s × 3.6 = km/h), so
+    /// that a meaning keeps one unit. Read-only points only.
+    scale: Option<f64>,
 }
+
+/// The only value of an impulse point: one order, no state.
+pub const IMPULSE: &str = "cycle";
 
 /// One Z2M device with everything needed to decode its messages.
 #[derive(Clone, Debug)]
@@ -44,6 +55,9 @@ pub struct Entry {
     pub device: Device,
     /// Mains-powered (router): always listening, can be read on demand.
     pub mains: bool,
+    /// A colour lamp that dims: the driver can play a flame on it
+    /// (`effect` = `flame`, see [`crate::flame`]).
+    pub flame: bool,
     codecs: HashMap<Arc<str>, Codec>,
 }
 
@@ -58,15 +72,32 @@ pub struct Catalog {
 impl Catalog {
     /// Rebuilds the catalog from a `bridge/devices` payload.
     pub fn from_bridge_devices(instance: &InstanceId, payload: &[u8]) -> serde_json::Result<Self> {
+        Self::with_impulses(instance, payload, &[])
+    }
+
+    /// Like [`Self::from_bridge_devices`], with the relays the user declared
+    /// as triggers (`impulse_points`: point ids such as `z2m:0x…/state_l1`).
+    /// Zigbee2MQTT does not say what a relay is wired to, and a pulse relay
+    /// looks like a plain switch whose state falls back to off: only the
+    /// owner knows.
+    pub fn with_impulses(
+        instance: &InstanceId,
+        payload: &[u8],
+        impulses: &[String],
+    ) -> serde_json::Result<Self> {
         let raw: Vec<RawDevice> = serde_json::from_slice(payload)?;
+        let mut applied = HashSet::new();
         let entries: HashMap<String, Entry> = raw
             .into_iter()
             .filter(|d| d.kind != "Coordinator" && !d.disabled)
             .map(|d| {
-                let entry = Entry::from_raw(instance, d);
+                let entry = Entry::from_raw(instance, d, impulses, &mut applied);
                 (entry.ieee.clone(), entry)
             })
             .collect();
+        for id in impulses.iter().filter(|id| !applied.contains(*id)) {
+            tracing::warn!(point = %id, "impulse_points: not a writable on/off point of a known device");
+        }
         let by_name = entries
             .values()
             .map(|e| (e.friendly_name.clone(), e.ieee.clone()))
@@ -100,15 +131,25 @@ impl Catalog {
 }
 
 impl Entry {
-    fn from_raw(instance: &InstanceId, raw: RawDevice) -> Self {
+    fn from_raw(
+        instance: &InstanceId,
+        raw: RawDevice,
+        impulses: &[String],
+        applied: &mut HashSet<String>,
+    ) -> Self {
         let mut points = Vec::new();
         let mut codecs = HashMap::new();
         let definition = raw.definition.unwrap_or_default();
         for expose in &definition.exposes {
             flatten(expose, "", "", &mut points, &mut codecs);
         }
+        let id = DeviceId::new(instance, &raw.ieee_address);
+        mark_impulses(&id, impulses, &mut points, &mut codecs, applied);
+        mark_soil(&mut points);
+        mark_presses(&mut points);
+        let flame = mark_flame(&mut points, &mut codecs);
         let device = Device {
-            id: DeviceId::new(instance, &raw.ieee_address),
+            id,
             instance: instance.clone(),
             native_name: raw.friendly_name.as_str().into(),
             manufacturer: definition.vendor.or(raw.manufacturer).map(Into::into),
@@ -123,8 +164,43 @@ impl Entry {
             friendly_name: raw.friendly_name,
             device,
             mains: raw.kind == "Router",
+            flame,
             codecs,
         }
+    }
+
+    /// One fade of the flame as a `{friendly_name}/set` payload: level, amber
+    /// and the time the lamp takes to get there. `switch_on`: the first one
+    /// also lights the lamp.
+    #[must_use]
+    pub fn flame_frame(&self, frame: &Frame, switch_on: bool) -> Json {
+        let mut payload = match self.encode("brightness", &Value::Float(frame.brightness)) {
+            Json::Object(map) => map,
+            _ => Map::new(),
+        };
+        if switch_on && let Json::Object(state) = self.encode("state", &Value::Bool(true)) {
+            payload.extend(state);
+        }
+        payload.insert(
+            "color".into(),
+            serde_json::json!({ "hue": frame.hue, "saturation": frame.saturation }),
+        );
+        payload.insert(
+            "transition".into(),
+            Json::from(frame.transition.as_secs_f64()),
+        );
+        Json::Object(payload)
+    }
+
+    /// The level to come back to when the flame stops, as a payload.
+    #[must_use]
+    pub fn flame_rest(&self, brightness: f64) -> Json {
+        let mut payload = match self.encode("brightness", &Value::Float(brightness)) {
+            Json::Object(map) => map,
+            _ => Map::new(),
+        };
+        payload.insert("transition".into(), Json::from(1));
+        Json::Object(payload)
     }
 
     /// `{name}/get` payload asking a listening device for its current
@@ -154,8 +230,18 @@ impl Entry {
             .points
             .iter()
             .filter_map(|point| {
-                let json = lookup(payload, &point.key)?;
                 let codec = self.codecs.get(&point.key);
+                // A trigger has no state: the relay falling back to off is
+                // the device finishing its pulse, not something to show.
+                if codec.is_some_and(|c| c.impulse.is_some()) {
+                    return None;
+                }
+                let json = lookup(payload, &point.key)?;
+                // Z2M clears a press right after it (`action: ""`): no press,
+                // and the last one stays on show (#198).
+                if is_press(point) && json.as_str().is_none_or(str::is_empty) {
+                    return None;
+                }
                 if codec.is_some_and(|c| c.xy_hex) {
                     let axis = |a: &str| json.get(a).and_then(Json::as_f64);
                     let hex = axis("x")
@@ -171,8 +257,11 @@ impl Entry {
                     return Some((point.key.clone(), Value::Null));
                 }
                 let level = codec.and_then(|c| c.level_max).zip(json.as_f64());
+                let scaled = codec.and_then(|c| c.scale).zip(json.as_f64());
                 let value = if let Some((max, level)) = level {
                     Value::Int(level_to_percent(level, max))
+                } else if let Some((scale, reading)) = scaled {
+                    Value::Float((reading * scale * 100.0).round() / 100.0)
                 } else {
                     match codec.and_then(|c| c.binary.as_ref()) {
                         Some((on, _)) if json == on => Value::Bool(true),
@@ -203,7 +292,12 @@ impl Entry {
             }
             _ => None,
         };
-        let wire = if let Some(xy) = xy {
+        let wire = if let Some(fire) = codec
+            .and_then(|c| c.impulse.as_ref())
+            .filter(|_| matches!(value, Value::Text(t) if &**t == IMPULSE))
+        {
+            fire.clone()
+        } else if let Some(xy) = xy {
             xy
         } else if let Some((max, percent)) = level {
             Json::from(percent_to_level(percent, max))
@@ -285,6 +379,46 @@ fn shutter_semantic(group: &str, property: &str, kind: &Kind) -> Option<Semantic
     }
 }
 
+/// A weather station's reading (Shelly WS90, the generic wind sensor), as
+/// Zigbee2MQTT names it: its meaning, with the one unit that meaning has.
+struct Weather {
+    semantic: Semantic,
+    kind: Kind,
+    unit: Option<Unit>,
+    /// A wind in m/s is converted to km/h (`× 3.6`), bounds included.
+    scale: Option<f64>,
+}
+
+/// The weather meaning of a read-only point, by its Z2M name and its unit.
+/// A reading in another unit keeps no weather meaning. The WS90's
+/// `precipitation` is an endless counter, not today's rain: none either.
+fn weather(property: &str, kind: &Kind, unit: Option<&Unit>) -> Option<Weather> {
+    let Kind::Numeric { min, max, step } = kind else {
+        return None;
+    };
+    let (semantic, scale) = match (property, unit.map(Unit::symbol)) {
+        ("wind_speed", Some("km/h")) => (Semantic::WindSpeed, None),
+        ("wind_speed", Some("m/s")) => (Semantic::WindSpeed, Some(3.6)),
+        ("gust_speed" | "wind_gust" | "wind_gusts", Some("km/h")) => (Semantic::WindGust, None),
+        ("gust_speed" | "wind_gust" | "wind_gusts", Some("m/s")) => (Semantic::WindGust, Some(3.6)),
+        ("wind_direction", Some("°")) => (Semantic::WindDirection, None),
+        ("rain_rate", Some("mm/h")) => (Semantic::RainRate, None),
+        ("uv_index", None) => (Semantic::UvIndex, None),
+        _ => return None,
+    };
+    let scaled = |v: &Option<f64>| v.map(|v| v * scale.unwrap_or(1.0));
+    Some(Weather {
+        semantic,
+        kind: Kind::Numeric {
+            min: scaled(min),
+            max: scaled(max),
+            step: scaled(step),
+        },
+        unit: semantic.fixed_unit().flatten(),
+        scale,
+    })
+}
+
 /// A group of exposes: a composite value or a specific type (light, cover…).
 fn flatten_group<'a>(
     expose: &'a RawExpose,
@@ -330,7 +464,7 @@ fn flatten<'a>(
     if points.iter().any(|p| p.key == key) {
         return;
     }
-    let (kind, binary) = match &*expose.kind {
+    let (mut kind, binary) = match &*expose.kind {
         // Z2M declares `contact` upside down (`value_on: false`, `value_off: true`,
         // "closed (= true) or open (= false)"), whereas Moli's convention is
         // `true` = closed. Map the wire value straight through instead of via
@@ -372,8 +506,10 @@ fn flatten<'a>(
         numeric_enum: !expose.values.is_empty() && expose.values.iter().all(Json::is_number),
         level_max: None,
         xy_hex: false,
+        impulse: None,
+        scale: None,
     };
-    let unit = expose.unit.as_deref().and_then(Unit::parse);
+    let mut unit = expose.unit.as_deref().and_then(Unit::parse);
     // A calibration offset in °C is configuration, not a temperature reading.
     // A lock's state (`LOCK`/`UNLOCK`, Z2M's `lock` expose) is no switch: `true` is
     // locked, and the guard asks a person before an agent opens it.
@@ -389,6 +525,13 @@ fn flatten<'a>(
         Semantic::Lock
     } else if let Some(semantic) = shutter_semantic(group, property, &kind) {
         semantic
+    } else if let Some(reading) = (expose.access & ACCESS_SET == 0)
+        .then(|| weather(property, &kind, unit.as_ref()))
+        .flatten()
+    {
+        codec.scale = reading.scale;
+        (kind, unit) = (reading.kind, reading.unit);
+        reading.semantic
     } else {
         Semantic::infer(&key, unit.as_ref())
     };
@@ -424,6 +567,138 @@ fn flatten<'a>(
         key: key.clone(),
     });
     codecs.insert(key, codec);
+}
+
+/// A lamp that takes a colour and dims can play the driver's flame: its
+/// `effect` gains `flame` and `no_effect` (the point is created when the lamp
+/// has none), and becomes readable, since the driver knows what it plays.
+fn mark_flame(points: &mut Vec<PointSpec>, codecs: &mut HashMap<Arc<str>, Codec>) -> bool {
+    let writable = |key: &str| points.iter().any(|p| &*p.key == key && p.access.write);
+    let colour = writable("color") && codecs.get("color").is_some_and(|c| c.xy_hex);
+    if !colour || !writable("brightness") || !writable("state") {
+        return false;
+    }
+    let ours = [NO_EFFECT, FLAME].map(Arc::<str>::from);
+    if let Some(point) = points.iter_mut().find(|p| &*p.key == "effect") {
+        let Kind::Enum { values } = &mut point.kind else {
+            return false;
+        };
+        if !point.access.write {
+            return false;
+        }
+        for value in ours {
+            if !values.contains(&value) {
+                values.push(value);
+            }
+        }
+        point.access.read = true;
+    } else {
+        let key: Arc<str> = "effect".into();
+        points.push(PointSpec {
+            label: "Effect".into(),
+            kind: Kind::Enum {
+                values: ours.to_vec(),
+            },
+            access: Access {
+                read: true,
+                write: true,
+            },
+            unit: None,
+            semantic: Semantic::infer(&key, None),
+            key: key.clone(),
+        });
+        codecs.insert(
+            key,
+            Codec {
+                binary: None,
+                gettable: false,
+                numeric_enum: false,
+                level_max: None,
+                xy_hex: false,
+                impulse: None,
+                scale: None,
+            },
+        );
+    }
+    true
+}
+
+/// Turns the relays the user declared as triggers into `cycle` orders:
+/// an enum with that single value, a `Control` (an agent always asks a
+/// person first), write-only, never read back. Only a plain writable on/off
+/// point qualifies; anything else is left as Zigbee2MQTT exposes it.
+fn mark_impulses(
+    device: &DeviceId,
+    impulses: &[String],
+    points: &mut [PointSpec],
+    codecs: &mut HashMap<Arc<str>, Codec>,
+    applied: &mut HashSet<String>,
+) {
+    for point in points.iter_mut() {
+        let id = format!("{device}/{}", point.key);
+        let Some(codec) = codecs.get_mut(&point.key) else {
+            continue;
+        };
+        let fire = match &codec.binary {
+            Some((on, _))
+                if impulses.contains(&id)
+                    && point.kind == Kind::Binary
+                    && point.access.write
+                    && point.semantic == Semantic::OnOff =>
+            {
+                on.clone()
+            }
+            _ => continue,
+        };
+        point.kind = Kind::Enum {
+            values: vec![IMPULSE.into()],
+        };
+        point.semantic = Semantic::Control;
+        point.access = Access {
+            read: false,
+            write: true,
+        };
+        codec.impulse = Some(fire);
+        codec.gettable = false;
+        applied.insert(id);
+    }
+}
+
+/// A button's or a remote's `action` (`single`, `double`, `hold`…): a press, an
+/// occurrence, never a state: the same value twice is two presses (#198).
+pub fn is_press(point: &PointSpec) -> bool {
+    &*point.key == "action" && matches!(point.kind, Kind::Enum { .. }) && !point.access.write
+}
+
+/// A button's `action` says it is a press (#211): the driver sends it with
+/// `pulse_state`, so the dashboard and the assistant know it whatever the brand.
+fn mark_presses(points: &mut [PointSpec]) {
+    for point in points.iter_mut() {
+        if is_press(point) {
+            point.semantic = Semantic::Press;
+        }
+    }
+}
+
+/// What a button sends in `command` mode (`on`, `off`, `brightness_*`,
+/// `color_temperature_*`): in `event` mode, no press of its own (#214).
+pub fn is_command_action(action: &str) -> bool {
+    matches!(action, "on" | "off")
+        || action.starts_with("brightness_")
+        || action.starts_with("color_temperature_")
+}
+
+/// A plant sensor's `dry` (Tuya soil sensors): its alarm is the plant's thirst.
+/// Only beside a soil moisture reading: elsewhere a bare `dry` says nothing.
+fn mark_soil(points: &mut [PointSpec]) {
+    if !points.iter().any(|p| p.semantic == Semantic::SoilMoisture) {
+        return;
+    }
+    for point in points.iter_mut() {
+        if &*point.key == "dry" && point.kind == Kind::Binary && !point.access.write {
+            point.semantic = Semantic::SoilDry;
+        }
+    }
 }
 
 /// A lamp's settable `color {x, y}` composite (`color_xy`).
@@ -473,6 +748,8 @@ fn push_color(
             numeric_enum: false,
             level_max: None,
             xy_hex: true,
+            impulse: None,
+            scale: None,
         },
     );
 }
@@ -556,10 +833,170 @@ mod tests {
         all[ieee].as_object().unwrap().clone()
     }
 
+    /// A weather station (Shelly WS90, as Zigbee2MQTT exposes it): its wind
+    /// in m/s is published in km/h, the unit of its meaning; its endless
+    /// `precipitation` counter is not today's rain.
+    #[test]
+    fn a_weather_station_speaks_the_units_of_its_meanings() {
+        let numeric = |property: &str, unit: Option<&str>, max: f64| {
+            let mut e = json!({ "type": "numeric", "name": property, "property": property, "access": 5, "value_min": 0, "value_max": max });
+            if let Some(unit) = unit {
+                e["unit"] = json!(unit);
+            }
+            e
+        };
+        let bridge = json!([
+            { "ieee_address": "0x00124b00000000c1", "type": "EndDevice", "friendly_name": "station",
+              "definition": { "model": "WS90", "vendor": "Shelly", "description": "Weather station",
+                "exposes": [
+                    numeric("wind_speed", Some("m/s"), 40.0),
+                    numeric("gust_speed", Some("m/s"), 40.0),
+                    numeric("wind_direction", Some("°"), 360.0),
+                    numeric("uv_index", None, 15.0),
+                    numeric("rain_rate", Some("mm/h"), 1000.0),
+                    numeric("precipitation", Some("mm"), 9999.0),
+                    numeric("temperature", Some("°C"), 60.0)
+                ] } },
+            { "ieee_address": "0x00124b00000000c2", "type": "Router", "friendly_name": "ventilateur",
+              "definition": { "model": "F", "vendor": "Y", "description": "Fan",
+                "exposes": [{ "type": "numeric", "name": "wind_speed", "property": "wind_speed", "access": 7, "value_min": 0, "value_max": 9 }] } }
+        ]);
+        let catalog = Catalog::from_bridge_devices(
+            &InstanceId::from("z2m"),
+            serde_json::to_vec(&bridge).unwrap().as_slice(),
+        )
+        .unwrap();
+        let station = catalog.by_name("station").unwrap();
+        let point = |key: &str| station.device.point(key).unwrap().clone();
+        let wind = point("wind_speed");
+        assert_eq!(wind.semantic, Semantic::WindSpeed);
+        assert_eq!(wind.unit, Some(Unit::KilometrePerHour));
+        assert!(
+            matches!(wind.kind, Kind::Numeric { max: Some(max), .. } if (max - 144.0).abs() < 1e-9)
+        );
+        assert_eq!(point("gust_speed").semantic, Semantic::WindGust);
+        assert_eq!(point("gust_speed").unit, Some(Unit::KilometrePerHour));
+        assert_eq!(point("wind_direction").semantic, Semantic::WindDirection);
+        assert_eq!(point("wind_direction").unit, Some(Unit::Degree));
+        assert_eq!(point("uv_index").semantic, Semantic::UvIndex);
+        assert_eq!(point("rain_rate").semantic, Semantic::RainRate);
+        assert_eq!(point("precipitation").semantic, Semantic::Other);
+        assert_eq!(point("temperature").semantic, Semantic::Temperature);
+
+        let reading =
+            json!({ "wind_speed": 2.5, "gust_speed": 10, "wind_direction": 270, "uv_index": 3 });
+        let values: HashMap<_, _> = station
+            .decode(reading.as_object().unwrap())
+            .into_iter()
+            .collect();
+        assert_eq!(values[&Arc::<str>::from("wind_speed")], Value::Float(9.0));
+        assert_eq!(values[&Arc::<str>::from("gust_speed")], Value::Float(36.0));
+        assert_eq!(
+            values[&Arc::<str>::from("wind_direction")],
+            Value::from_json(&json!(270))
+        );
+
+        // A fan's settable `wind_speed` (no unit) is no weather.
+        let fan = catalog.by_name("ventilateur").unwrap();
+        assert_eq!(
+            fan.device.point("wind_speed").unwrap().semantic,
+            Semantic::Other
+        );
+    }
+
+    /// A Tuya soil sensor (COOLO CS-201Z): its soil is a plant's, its `dry` the
+    /// plant's thirst (#163). A bare `dry` elsewhere stays what it is.
+    #[test]
+    fn a_soil_sensor_is_a_plant_and_its_dry_is_thirst() {
+        let numeric = |property: &str, unit: &str| json!({ "type": "numeric", "name": property, "property": property, "access": 1, "unit": unit });
+        let dry = json!({ "type": "binary", "name": "dry", "property": "dry", "access": 1, "value_on": true, "value_off": false });
+        let bridge = json!([
+            { "ieee_address": "0x00124b00000000b1", "type": "EndDevice", "friendly_name": "plante",
+              "definition": { "model": "CS-201Z", "vendor": "COOLO", "description": "Soil moisture sensor",
+                "exposes": [dry, numeric("soil_moisture", "%"), numeric("temperature", "°C"), numeric("humidity", "%")] } },
+            { "ieee_address": "0x00124b00000000b2", "type": "EndDevice", "friendly_name": "autre",
+              "definition": { "model": "X", "vendor": "Y", "description": "Not a plant", "exposes": [dry] } }
+        ]);
+        let catalog = Catalog::from_bridge_devices(
+            &InstanceId::from("z2m"),
+            serde_json::to_vec(&bridge).unwrap().as_slice(),
+        )
+        .unwrap();
+        let plant = catalog.by_name("plante").unwrap();
+        let semantic = |key| plant.device.point(key).unwrap().semantic;
+        assert_eq!(semantic("soil_moisture"), Semantic::SoilMoisture);
+        assert_eq!(semantic("dry"), Semantic::SoilDry);
+        assert_eq!(semantic("temperature"), Semantic::Temperature);
+        let other = catalog.by_name("autre").unwrap();
+        assert_eq!(other.device.point("dry").unwrap().semantic, Semantic::Other);
+    }
+
+    /// The real frames of a COOLO CS-201Z (HOBEIAN ZG-303Z) soil sensor.
+    #[test]
+    fn a_real_soil_sensor_reads_as_a_plant() {
+        let catalog = catalog();
+        let plant = catalog.by_name("0x00124b000000000b").unwrap();
+        let semantic = |key| plant.device.point(key).unwrap().semantic;
+        assert_eq!(semantic("soil_moisture"), Semantic::SoilMoisture);
+        assert_eq!(semantic("dry"), Semantic::SoilDry);
+        assert_eq!(semantic("temperature"), Semantic::Temperature);
+        assert_eq!(semantic("humidity"), Semantic::Humidity);
+        let values: HashMap<_, _> = plant
+            .decode(&state("0x00124b000000000b"))
+            .into_iter()
+            .collect();
+        assert_eq!(values["soil_moisture"].as_f64(), Some(54.0));
+        assert_eq!(values["dry"], Value::Bool(false));
+        assert_eq!(values["soil_warning"].as_f64(), Some(50.0));
+    }
+
+    /// Real frames of an Aqara WXKG06LM and a Tuya ZG-101ZL (TS004F): their
+    /// `action` is a press (#198); the button's `operation_mode` is a setting.
+    #[test]
+    fn a_buttons_action_is_a_press() {
+        let catalog = catalog();
+        for ieee in ["0x00124b000000000c", "0x00124b000000000d"] {
+            let entry = catalog.by_name(ieee).unwrap();
+            let action = entry.device.point("action").unwrap();
+            assert!(is_press(action), "{ieee}");
+            assert_eq!(action.semantic, Semantic::Press, "{ieee}");
+            let values: HashMap<_, _> = entry.decode(&state(ieee)).into_iter().collect();
+            assert_eq!(values["action"], Value::from("single"), "{ieee}");
+        }
+        let button = catalog.by_name("0x00124b000000000d").unwrap();
+        let mode = button.device.point("operation_mode").unwrap();
+        assert!(!is_press(mode));
+        assert_ne!(mode.semantic, Semantic::Press);
+        // Only these two buttons' `action` is a press (#211): nothing else in
+        // the bridge, and never a point Moli can set.
+        let mut presses: Vec<_> = catalog
+            .entries()
+            .flat_map(|e| e.device.points.iter().map(move |p| (e, p)))
+            .filter(|(_, p)| p.semantic == Semantic::Press)
+            .map(|(e, p)| {
+                assert!(!p.access.write, "{}/{}", e.ieee, p.key);
+                format!("{}/{}", e.ieee, p.key)
+            })
+            .collect();
+        presses.sort();
+        assert_eq!(
+            presses,
+            ["0x00124b000000000c/action", "0x00124b000000000d/action"]
+        );
+        // Z2M clears a press right after it: nothing to tell, nothing to show.
+        let cleared = serde_json::json!({ "action": "", "battery": 100 });
+        let values: HashMap<_, _> = button
+            .decode(cleared.as_object().unwrap())
+            .into_iter()
+            .collect();
+        assert!(!values.contains_key("action"));
+        assert!(values.contains_key("battery"));
+    }
+
     #[test]
     fn real_bridge_is_fully_mapped() {
         let catalog = catalog();
-        assert_eq!(catalog.len(), 8, "coordinator excluded, 8 real devices");
+        assert_eq!(catalog.len(), 12, "coordinator excluded, 12 real devices");
         for entry in catalog.entries() {
             assert!(
                 !entry.device.points.is_empty(),
@@ -568,6 +1005,97 @@ mod tests {
             );
             assert!(entry.device.id.as_str().starts_with("z2m:0x"));
         }
+    }
+
+    const GATE: &str = "0x00124b000000000a";
+
+    fn gate_catalog(impulses: &[&str]) -> Catalog {
+        let impulses: Vec<String> = impulses.iter().map(|id| (*id).to_owned()).collect();
+        Catalog::with_impulses(
+            &InstanceId::from("z2m"),
+            include_bytes!("../../../integrations/z2m/fixtures/bridge_devices.json"),
+            &impulses,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_two_relay_switch_is_two_plain_switches_by_default() {
+        let catalog = catalog();
+        let gate = catalog.by_name(GATE).unwrap();
+        for key in ["state_l1", "state_l2"] {
+            let point = gate.device.point(key).unwrap();
+            assert_eq!(point.kind, Kind::Binary);
+            assert_eq!(point.semantic, Semantic::OnOff);
+        }
+    }
+
+    #[test]
+    fn a_declared_relay_is_a_trigger_never_a_state() {
+        let catalog = gate_catalog(&["z2m:0x00124b000000000a/state_l1"]);
+        let gate = catalog.by_name(GATE).unwrap();
+        let relay = gate.device.point("state_l1").unwrap();
+        assert_eq!(
+            relay.kind,
+            Kind::Enum {
+                values: vec![IMPULSE.into()]
+            }
+        );
+        // An order to a machine: an agent always asks a person first.
+        assert_eq!(relay.semantic, Semantic::Control);
+        assert!(relay.access.write && !relay.access.read);
+        // The other relay was not declared: it stays what Zigbee2MQTT says.
+        let other = gate.device.point("state_l2").unwrap();
+        assert_eq!(other.kind, Kind::Binary);
+        assert_eq!(other.semantic, Semantic::OnOff);
+    }
+
+    #[test]
+    fn a_trigger_fires_the_relay_and_ignores_its_fall_back() {
+        let catalog = gate_catalog(&[
+            "z2m:0x00124b000000000a/state_l1",
+            "z2m:0x00124b000000000a/state_l2",
+        ]);
+        let gate = catalog.by_name(GATE).unwrap();
+        assert_eq!(
+            gate.encode("state_l1", &Value::from(IMPULSE)),
+            json!({"state_l1": "ON"})
+        );
+        assert_eq!(
+            gate.encode("state_l2", &Value::from(IMPULSE)),
+            json!({"state_l2": "ON"})
+        );
+        // Real frame taken while relay 1 was pulsing: no state to show.
+        let decoded: HashMap<_, _> = gate.decode(&state(GATE)).into_iter().collect();
+        assert!(!decoded.contains_key("state_l1"));
+        assert!(!decoded.contains_key("state_l2"));
+        // The rest of the device keeps reading normally.
+        assert_eq!(decoded["switch_type"], Value::from("momentary"));
+    }
+
+    #[test]
+    fn a_trigger_is_never_polled() {
+        let catalog = gate_catalog(&["z2m:0x00124b000000000a/state_l1"]);
+        let request = catalog.by_name(GATE).unwrap().read_request().unwrap();
+        assert!(request.get("state_l1").is_none());
+        assert!(request.get("state_l2").is_some());
+    }
+
+    #[test]
+    fn only_a_writable_switch_can_be_declared() {
+        // A sensor reading, an unknown point and an unknown device change nothing.
+        let catalog = gate_catalog(&[
+            "z2m:0x00124b000000000a/linkquality",
+            "z2m:0x00124b000000000a/inching_control_set.inching_control_1",
+            "z2m:0x00124b000000000a/nope",
+            "z2m:0x00124b00000000ff/state_l1",
+        ]);
+        let gate = catalog.by_name(GATE).unwrap();
+        assert_eq!(gate.device.point("state_l1").unwrap().kind, Kind::Binary);
+        assert!(matches!(
+            gate.device.point("linkquality").unwrap().kind,
+            Kind::Numeric { .. }
+        ));
     }
 
     #[test]
@@ -752,6 +1280,7 @@ mod tests {
             ieee: "0x2".into(),
             friendly_name: "trv".into(),
             mains: false,
+            flame: false,
             device: Device {
                 id: DeviceId::from("z2m:0x2"),
                 instance: InstanceId::from("z2m"),
@@ -783,10 +1312,12 @@ mod tests {
         let mut points = Vec::new();
         let mut codecs = HashMap::new();
         flatten(&expose, "", "", &mut points, &mut codecs);
+        let flame = mark_flame(&mut points, &mut codecs);
         Entry {
             ieee: "0x3".into(),
             friendly_name: "bulb".into(),
             mains: true,
+            flame,
             device: Device {
                 id: DeviceId::from("z2m:0x3"),
                 instance: InstanceId::from("z2m"),
@@ -1051,6 +1582,69 @@ mod tests {
         assert_eq!(warm["color_temp"], Value::Int(370));
     }
 
+    fn colour_lamp(effect: Option<serde_json::Value>) -> Entry {
+        let mut features = vec![
+            json!({"type": "binary", "property": "state", "access": 7, "value_on": "ON", "value_off": "OFF"}),
+            json!({"type": "numeric", "property": "brightness", "access": 7, "value_min": 0, "value_max": 254}),
+            json!({"type": "composite", "name": "color_xy", "property": "color", "access": 7, "features": [
+                {"type": "numeric", "property": "x", "access": 7},
+                {"type": "numeric", "property": "y", "access": 7}
+            ]}),
+        ];
+        features.extend(effect);
+        entry_of(json!({"type": "light", "features": features}))
+    }
+
+    fn effects(entry: &Entry) -> Vec<&str> {
+        match &entry.device.point("effect").expect("an effect point").kind {
+            Kind::Enum { values } => values.iter().map(|v| &**v).collect(),
+            other => panic!("effect is an enum, not {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_colour_lamp_can_play_the_flame() {
+        // Its own Zigbee effects stay, the flame comes after them.
+        let strip = colour_lamp(Some(json!(
+            {"type": "enum", "property": "effect", "access": 2, "values": ["blink", "breathe"]}
+        )));
+        assert!(strip.flame);
+        assert_eq!(effects(&strip), ["blink", "breathe", "no_effect", "flame"]);
+        let effect = strip.device.point("effect").unwrap();
+        assert!(effect.access.read && effect.access.write);
+        // A lamp without any effect gets the point.
+        let bulb = colour_lamp(None);
+        assert!(bulb.flame);
+        assert_eq!(effects(&bulb), ["no_effect", "flame"]);
+        // A white lamp has no flame: nothing is added.
+        let white = entry_of(light(254));
+        assert!(!white.flame);
+        assert!(white.device.point("effect").is_none());
+    }
+
+    #[test]
+    fn a_fade_of_the_flame_is_one_order() {
+        let strip = colour_lamp(None);
+        let frame = Frame {
+            brightness: 22.0,
+            hue: 28,
+            saturation: 90,
+            transition: std::time::Duration::from_millis(1500),
+        };
+        assert_eq!(
+            strip.flame_frame(&frame, false),
+            json!({"brightness": 56, "color": {"hue": 28, "saturation": 90}, "transition": 1.5})
+        );
+        assert_eq!(
+            strip.flame_frame(&frame, true),
+            json!({"state": "ON", "brightness": 56, "color": {"hue": 28, "saturation": 90}, "transition": 1.5})
+        );
+        assert_eq!(
+            strip.flame_rest(22.0),
+            json!({"brightness": 56, "transition": 1})
+        );
+    }
+
     #[test]
     fn composite_keys_round_trip() {
         let expose: RawExpose = serde_json::from_value(json!({
@@ -1079,6 +1673,7 @@ mod tests {
             ieee: "0x1".into(),
             friendly_name: "lamp".into(),
             mains: true,
+            flame: false,
             device: Device {
                 id: DeviceId::from("z2m:0x1"),
                 instance: InstanceId::from("z2m"),

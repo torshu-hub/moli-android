@@ -206,14 +206,14 @@ impl Assistant {
             let (alias, key) = written.as_str()?.trim().split_once('/')?;
             Some(format!("{}/{key}", aliases.get(alias)?.as_str()))
         };
+        // The person named a room and the model picked a device elsewhere: nothing is sent.
+        if matches!(name, "set" | "adjust" | "schedule")
+            && let Some(words) =
+                self.elsewhere(point_of(&args["point"]).as_deref(), layout, question)
+        {
+            return words;
+        }
         match name {
-            // The person named a room and the model picked a device elsewhere: nothing is sent.
-            "set" | "adjust" | "schedule"
-                if let Some(words) =
-                    self.elsewhere(point_of(&args["point"]).as_deref(), layout, question) =>
-            {
-                words
-            }
             "set" => {
                 self.house_set(point_of(&args["point"]), &args, question, run)
                     .await
@@ -1486,13 +1486,18 @@ fn is_noise(label: &str) -> bool {
 }
 
 /// What a point is called in French, and the stems of the words that ask for it.
-const POINTS: [(&str, &str, &[&str]); 12] = [
+const POINTS: [(&str, &str, &[&str]); 13] = [
     (
         "temperature",
         "température",
         &["temperat", "degre", "chaud", "froid"],
     ),
     ("humidity", "humidité", &["humid"]),
+    (
+        "soil_moisture",
+        "humidité de la terre",
+        &["arros", "soif", "=terre", "=sol"],
+    ),
     ("battery", "batterie", &["batter", "=pile"]),
     ("power", "puissance", &["puissance", "consomm", "watt"]),
     ("energy", "énergie", &["energie", "kwh"]),

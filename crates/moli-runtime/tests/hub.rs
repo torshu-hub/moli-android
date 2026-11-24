@@ -9,7 +9,8 @@ use moli_core::{
     PointSpec, Semantic, Value,
 };
 use moli_runtime::{
-    BoxFuture, CommandError, Driver, DriverCtx, Hub, HubOptions, LabelPatch, spawn_driver,
+    BoxFuture, CommandError, Driver, DriverCtx, Hub, HubOptions, LabelError, LabelPatch,
+    spawn_driver,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -150,6 +151,229 @@ async fn command_round_trip_updates_state_and_journal() {
     assert!(matches!(journal[0].action, Action::Command { .. }));
 }
 
+/// The same value read again within five minutes tells nothing (#230):
+/// neither a change nor a `Seen`. Its reading's time still moves, for the API.
+#[tokio::test]
+async fn the_same_value_read_again_soon_tells_nothing() {
+    let (hub, _cancel) = start(false).await;
+    let state = point("state");
+    let order = |on| hub.command(&state, Value::Bool(on), Origin::Api, Some("test".into()));
+    order(true).await.unwrap();
+    let first = hub.state(&point("state")).unwrap().ts;
+    let mut events = hub.subscribe();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    order(true).await.unwrap();
+    assert!(
+        hub.state(&point("state")).unwrap().ts > first,
+        "the reading's time moved"
+    );
+    let mut states = 0;
+    while let Ok(event) = events.try_recv() {
+        match event {
+            Event::State { ref point, .. } if point.as_str() == "fake:plug1/state" => states += 1,
+            Event::Seen { .. } => panic!("no `Seen` within five minutes"),
+            _ => {}
+        }
+    }
+    assert_eq!(states, 0, "the same value is no change");
+    // A new value: a change, as before.
+    let mut events = hub.subscribe();
+    order(false).await.unwrap();
+    let mut changed = false;
+    while let Ok(event) = events.try_recv() {
+        changed |= matches!(event, Event::State { ref point, ref value, .. }
+            if point.as_str() == "fake:plug1/state" && *value == Value::Bool(false));
+    }
+    assert!(changed);
+}
+
+/// The same plug, kept by Moli itself (like the alarm's state).
+struct InsidePlug(Arc<FakePlug>);
+
+impl Driver for InsidePlug {
+    fn kind(&self) -> &'static str {
+        "fake"
+    }
+
+    fn run<'a>(&'a self, ctx: &'a mut DriverCtx) -> BoxFuture<'a, anyhow::Result<()>> {
+        self.0.run(ctx)
+    }
+
+    fn stays_inside(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn a_mirror_house_lets_through_what_stays_inside_moli() {
+    let hub = Hub::new(HubOptions {
+        mirror: true,
+        ..HubOptions::default()
+    })
+    .unwrap();
+    let cancel = CancellationToken::new();
+    spawn_driver(
+        &hub,
+        InstanceId::from("fake"),
+        Arc::new(InsidePlug(FakePlug::new(false))),
+        cancel.clone(),
+    );
+    wait_running(&hub).await;
+    hub.command(&point("state"), Value::Bool(true), Origin::Automation, None)
+        .await
+        .unwrap();
+    assert_eq!(hub.state(&point("state")).unwrap().value, Value::Bool(true));
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn some_orders_want_the_code_each_time_even_from_a_session() {
+    let (hub, _cancel) = start_with(HubOptions {
+        guard: moli_runtime::guard::GuardPolicy {
+            code_each_time: vec![moli_runtime::guard::CodeEachTime {
+                point: "fake:plug1/state".into(),
+                values: vec!["false".into()],
+            }],
+            ..Default::default()
+        },
+        ..HubOptions::default()
+    })
+    .await;
+    // Switching on is not concerned.
+    hub.command(&point("state"), Value::Bool(true), Origin::Ui, None)
+        .await
+        .unwrap();
+    // Off wants the code: a person with a session is held too.
+    let Err(CommandError::NeedsApproval { id, .. }) = hub
+        .command(&point("state"), Value::Bool(false), Origin::Ui, None)
+        .await
+    else {
+        panic!("held");
+    };
+    assert!(hub.approvals().iter().any(|a| a.id == id && a.code));
+    assert_eq!(
+        hub.resolve_approval(id, &point("state"), true, Origin::Ui, None)
+            .await,
+        Err(moli_runtime::ApprovalError::CodeNeeded)
+    );
+    // Still waiting: typed now, it goes.
+    hub.resolve_approval_with_code(id, &point("state"), true, Origin::Ui, None, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        hub.state(&point("state")).unwrap().value,
+        Value::Bool(false)
+    );
+    // An automation a person approved carries their intent.
+    hub.command(&point("state"), Value::Bool(true), Origin::Ui, None)
+        .await
+        .unwrap();
+    hub.command(
+        &point("state"),
+        Value::Bool(false),
+        Origin::Automation,
+        None,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn the_house_s_own_orders_and_toggles_want_the_code_each_time_too() {
+    let (hub, _cancel) = start_with(HubOptions {
+        guard: moli_runtime::guard::GuardPolicy {
+            code_each_time: vec![moli_runtime::guard::CodeEachTime {
+                point: "fake:plug1/state".into(),
+                values: vec!["false".into()],
+            }],
+            ..Default::default()
+        },
+        ..HubOptions::default()
+    })
+    .await;
+    hub.command(&point("state"), Value::Bool(true), Origin::Ui, None)
+        .await
+        .unwrap();
+    // A scene, a fixture, a driven load: sent in the house's name, on a
+    // gesture that typed no code. Held, the code wanted.
+    let Err(CommandError::NeedsApproval { id, .. }) = hub
+        .command(&point("state"), Value::Bool(false), Origin::System, None)
+        .await
+    else {
+        panic!("held");
+    };
+    assert!(hub.approvals().iter().any(|a| a.id == id && a.code));
+    assert_eq!(hub.state(&point("state")).unwrap().value, Value::Bool(true));
+    // A toggle may become the order that wants it: held, whichever way.
+    for origin in [Origin::Household, Origin::Ui, Origin::System] {
+        assert!(hub.would_hold(&point("state"), None, origin).is_some());
+    }
+    assert!(hub.wants_code(&point("state"), None));
+    // Only an automation a person approved (with the code) goes without.
+    assert!(
+        hub.would_hold(&point("state"), None, Origin::Automation)
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn agents_may_what_a_person_allowed_them_in_the_file() {
+    let (hub, _cancel) = start_with(HubOptions {
+        guard: moli_runtime::guard::GuardPolicy {
+            protected_devices: vec!["fake:plug1".into()],
+            agents_may: vec![moli_runtime::guard::PointValues {
+                point: "fake:plug1/state".into(),
+                values: vec!["true".into()],
+            }],
+            ..Default::default()
+        },
+        ..HubOptions::default()
+    })
+    .await;
+    // The assistant switches on: allowed in the file.
+    hub.command(&point("state"), Value::Bool(true), Origin::Assistant, None)
+        .await
+        .unwrap();
+    // Off is not: the protected device still wants a person.
+    assert!(matches!(
+        hub.command(&point("state"), Value::Bool(false), Origin::Assistant, None)
+            .await,
+        Err(CommandError::NeedsApproval { .. })
+    ));
+}
+
+#[tokio::test]
+async fn a_mirror_house_journals_every_order_and_sends_none() {
+    let (hub, _cancel) = start_with(HubOptions {
+        mirror: true,
+        ..HubOptions::default()
+    })
+    .await;
+    let before = hub.state(&point("state")).map(|s| s.value);
+
+    // From the dashboard, an agent, an automation: none reaches the plug.
+    for origin in [Origin::Ui, Origin::Mcp, Origin::Automation] {
+        let sent = hub
+            .command(&point("state"), Value::Bool(true), origin, None)
+            .await;
+        assert_eq!(sent, Err(CommandError::Mirror), "{origin:?}");
+    }
+    assert_eq!(hub.state(&point("state")).map(|s| s.value), before);
+    // Each one is in the journal, refused as a mirror's.
+    let journal = hub.journal(10);
+    assert_eq!(journal.len(), 3);
+    assert!(journal.iter().all(|entry| matches!(
+        &entry.outcome,
+        Outcome::Err(e) if e.contains("mirror")
+    )));
+    // An invalid order is still refused for what it is.
+    assert_eq!(
+        hub.command(&point("power"), Value::Int(5), Origin::Ui, None)
+            .await,
+        Err(CommandError::ReadOnly)
+    );
+}
+
 #[tokio::test]
 async fn invalid_writes_are_refused_and_journaled() {
     let (hub, _cancel) = start(false).await;
@@ -268,6 +492,119 @@ async fn labels_persist_and_reload() {
 }
 
 #[tokio::test]
+async fn a_point_keeps_the_name_the_family_gives_it() {
+    let dir = std::env::temp_dir().join(format!("moli-point-labels-{}", std::process::id()));
+    let path = dir.join("labels.toml");
+    let _ = std::fs::remove_file(&path);
+    let opts = HubOptions {
+        labels_path: Some(path.clone()),
+        ..HubOptions::default()
+    };
+    let hub = Hub::new(opts.clone()).unwrap();
+    let cancel = CancellationToken::new();
+    spawn_driver(
+        &hub,
+        InstanceId::from("fake"),
+        FakePlug::new(false),
+        cancel.clone(),
+    );
+    wait_running(&hub).await;
+    let device = moli_core::DeviceId::from("fake:plug1");
+
+    // An agent may name a point nobody named, cleaned like any label.
+    let label = hub
+        .set_point_label(
+            &device,
+            "state",
+            "  Écran\n bureau ",
+            false,
+            Origin::Mcp,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        label.points.get("state").map(String::as_str),
+        Some("Écran bureau")
+    );
+    // Never rename it: a person does.
+    let refused = hub
+        .set_point_label(&device, "state", "Autre", false, Origin::Mcp, None)
+        .await;
+    assert!(matches!(refused, Err(LabelError::Guarded(_))));
+    hub.set_point_label(&device, "state", "Lampe", false, Origin::Ui, None)
+        .await
+        .unwrap();
+    // A name home.json gives it counts too: an agent does not cover it,
+    // a person does.
+    hub.set_point_label(&device, "state", "", false, Origin::Ui, None)
+        .await
+        .unwrap();
+    let covered = hub
+        .set_point_label(&device, "state", "Lampe", true, Origin::Mcp, None)
+        .await;
+    assert!(matches!(covered, Err(LabelError::Guarded(_))));
+    hub.set_point_label(&device, "state", "Lampe", true, Origin::Ui, None)
+        .await
+        .unwrap();
+    // A point the device does not have, a device Moli does not know.
+    let ghost = hub
+        .set_point_label(&device, "ghost", "X", false, Origin::Ui, None)
+        .await;
+    assert!(matches!(ghost, Err(LabelError::UnknownPoint)));
+    let nobody = hub
+        .set_point_label(&"fake:ghost".into(), "state", "X", false, Origin::Ui, None)
+        .await;
+    assert!(matches!(nobody, Err(LabelError::UnknownDevice)));
+    // The device's own name is untouched by its points', and the other way round.
+    hub.set_label(
+        &device,
+        LabelPatch {
+            name: Some("Multiprise".into()),
+            room: None,
+        },
+        Origin::Ui,
+        None,
+    )
+    .await
+    .unwrap();
+    let saved = hub.device(&device).unwrap().label;
+    assert_eq!(saved.name.as_deref(), Some("Multiprise"));
+    assert_eq!(saved.points.get("state").map(String::as_str), Some("Lampe"));
+
+    // Kept on disk; an empty name forgets it.
+    let reloaded = Hub::new(opts).unwrap();
+    let cancel2 = CancellationToken::new();
+    spawn_driver(
+        &reloaded,
+        InstanceId::from("fake"),
+        FakePlug::new(false),
+        cancel2.clone(),
+    );
+    wait_running(&reloaded).await;
+    assert_eq!(
+        reloaded
+            .device(&device)
+            .unwrap()
+            .label
+            .points
+            .get("state")
+            .map(String::as_str),
+        Some("Lampe")
+    );
+    let forgot = reloaded
+        .set_point_label(&device, "state", " ", false, Origin::Ui, None)
+        .await
+        .unwrap();
+    assert!(forgot.points.is_empty());
+    assert_eq!(forgot.name.as_deref(), Some("Multiprise"));
+
+    cancel.cancel();
+    cancel2.cancel();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
 async fn cached_values_are_restored_with_their_age() {
     let dir = std::env::temp_dir().join(format!("moli-state-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -321,6 +658,8 @@ fn guarded_hub() -> HubOptions {
             quiet_hours: None,
             protect_unassigned: false,
             dashboard: moli_runtime::guard::Dashboard::Trusted,
+            code_each_time: vec![],
+            agents_may: vec![],
         },
         ..HubOptions::default()
     }
@@ -661,6 +1000,8 @@ async fn groups_are_guarded_by_their_members_rooms_and_lost_rooms_are_reported()
             quiet_hours: None,
             protect_unassigned: false,
             dashboard: moli_runtime::guard::Dashboard::Trusted,
+            code_each_time: vec![],
+            agents_may: vec![],
         },
         ..HubOptions::default()
     })
@@ -846,6 +1187,140 @@ struct Sluggish {
     executed: Arc<AtomicU32>,
 }
 
+struct DropsAcceptedCommand {
+    received: Arc<AtomicU32>,
+}
+
+struct RefusesCommand {
+    received: Arc<AtomicU32>,
+}
+
+impl Driver for RefusesCommand {
+    fn kind(&self) -> &'static str {
+        "refusal"
+    }
+
+    fn run<'a>(&'a self, ctx: &'a mut DriverCtx) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            let id = ctx.device_id("lamp");
+            ctx.upsert_device(Device {
+                id,
+                instance: ctx.instance().clone(),
+                native_name: "Lampe".into(),
+                manufacturer: None,
+                model: None,
+                description: None,
+                native_room: None,
+                members: Vec::new(),
+                points: vec![spec("state", Kind::Binary, true, Semantic::OnOff)],
+            });
+            ctx.ready();
+            while let Some(command) = ctx.next_command().await {
+                self.received.fetch_add(1, Ordering::SeqCst);
+                command.reply_refused("explicit Matter status failure".into());
+            }
+            Ok(())
+        })
+    }
+}
+
+impl Driver for DropsAcceptedCommand {
+    fn kind(&self) -> &'static str {
+        "drop-reply"
+    }
+
+    fn run<'a>(&'a self, ctx: &'a mut DriverCtx) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            let id = ctx.device_id("lamp");
+            ctx.upsert_device(Device {
+                id,
+                instance: ctx.instance().clone(),
+                native_name: "Lampe".into(),
+                manufacturer: None,
+                model: None,
+                description: None,
+                native_room: None,
+                members: Vec::new(),
+                points: vec![spec("state", Kind::Binary, true, Semantic::OnOff)],
+            });
+            ctx.ready();
+            while let Some(command) = ctx.next_command().await {
+                self.received.fetch_add(1, Ordering::SeqCst);
+                drop(command);
+            }
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dropped_driver_reply_is_unknown_and_not_retried() {
+    let hub = Hub::new(HubOptions {
+        command_timeout: Duration::from_millis(200),
+        ..HubOptions::default()
+    })
+    .unwrap();
+    let received = Arc::new(AtomicU32::new(0));
+    let cancel = CancellationToken::new();
+    spawn_driver(
+        &hub,
+        InstanceId::from("drop-reply"),
+        Arc::new(DropsAcceptedCommand {
+            received: Arc::clone(&received),
+        }),
+        cancel.clone(),
+    );
+    wait_running(&hub).await;
+    assert_eq!(
+        hub.command(
+            &PointId::from("drop-reply:lamp/state".to_owned()),
+            Value::Bool(true),
+            Origin::Ui,
+            None,
+        )
+        .await,
+        Err(CommandError::OutcomeUnknown)
+    );
+    tokio::time::sleep(moli_runtime::CONFIRM_WINDOW + Duration::from_secs(1)).await;
+    assert_eq!(received.load(Ordering::SeqCst), 1);
+    cancel.cancel();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_definite_driver_refusal_is_not_retried() {
+    let hub = Hub::new(HubOptions {
+        command_timeout: Duration::from_millis(200),
+        ..HubOptions::default()
+    })
+    .unwrap();
+    let received = Arc::new(AtomicU32::new(0));
+    let cancel = CancellationToken::new();
+    spawn_driver(
+        &hub,
+        InstanceId::from("refusal"),
+        Arc::new(RefusesCommand {
+            received: Arc::clone(&received),
+        }),
+        cancel.clone(),
+    );
+    wait_running(&hub).await;
+    assert_eq!(
+        hub.command(
+            &PointId::from("refusal:lamp/state".to_owned()),
+            Value::Bool(true),
+            Origin::Ui,
+            None,
+        )
+        .await,
+        Err(CommandError::DriverRefused(
+            "explicit Matter status failure".into()
+        ))
+    );
+    tokio::time::sleep(moli_runtime::CONFIRM_WINDOW + Duration::from_secs(1)).await;
+    assert_eq!(received.load(Ordering::SeqCst), 1);
+    cancel.cancel();
+}
+
 impl Driver for Sluggish {
     fn kind(&self) -> &'static str {
         "sluggish"
@@ -908,6 +1383,7 @@ async fn stale_orders_never_run() {
     let late = hub
         .command(&lamp(), Value::Bool(true), Origin::Ui, None)
         .await;
+    // A hub deadline is a plain transient; the follow-up re-sends it later.
     assert_eq!(late, Err(CommandError::Timeout));
     // The driver wakes up after the hub gave up: the order must not run.
     tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -1082,6 +1558,8 @@ fn quiet_all_day() -> HubOptions {
             ),
             protect_unassigned: false,
             dashboard: moli_runtime::guard::Dashboard::Trusted,
+            code_each_time: vec![],
+            agents_may: vec![],
         },
         ..HubOptions::default()
     }
@@ -1367,6 +1845,71 @@ async fn oversized_orders_are_refused_and_journaled_without_their_bulk() {
     }
 }
 
+/// Once `next_command()` ends (Moli stops), still has something to finish
+/// (a last write to its device), or never finishes when `hang` is set.
+struct Tidy {
+    done: Arc<std::sync::atomic::AtomicBool>,
+    hang: bool,
+}
+
+impl Driver for Tidy {
+    fn kind(&self) -> &'static str {
+        "tidy"
+    }
+
+    fn run<'a>(&'a self, ctx: &'a mut DriverCtx) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            ctx.ready();
+            while let Some(cmd) = ctx.next_command().await {
+                cmd.reply(Ok(()));
+            }
+            if self.hang {
+                std::future::pending::<()>().await;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            self.done.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stopping_driver_may_finish_within_a_grace() {
+    for hang in [false, true] {
+        let hub = Hub::new(HubOptions::default()).unwrap();
+        let cancel = CancellationToken::new();
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task = spawn_driver(
+            &hub,
+            InstanceId::from("tidy"),
+            Arc::new(Tidy {
+                done: done.clone(),
+                hang,
+            }),
+            cancel.clone(),
+        );
+        wait_running(&hub).await;
+        let asked = tokio::time::Instant::now();
+        cancel.cancel();
+        task.await.unwrap();
+        let took = asked.elapsed();
+        let status = hub.snapshot().drivers[0].status.clone();
+        assert_eq!(status, DriverStatus::Stopped, "hang {hang}");
+        if hang {
+            // Given up after the grace (4 s): the shutdown never hangs.
+            assert!(!done.load(Ordering::SeqCst));
+            assert!(
+                took >= Duration::from_secs(4) && took < Duration::from_secs(5),
+                "{took:?}"
+            );
+        } else {
+            // Its last step ran, and nothing was reported as a failure.
+            assert!(done.load(Ordering::SeqCst));
+            assert!(took < Duration::from_secs(1), "{took:?}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn an_agent_opening_a_garage_door_or_a_lock_waits_for_a_person() {
     let (hub, _cancel) = start(false).await;
@@ -1542,4 +2085,343 @@ async fn a_restarted_driver_does_not_keep_the_previous_runs_warning() {
     assert!(hub.snapshot().drivers[0].warning.is_none());
     cancel.cancel();
     supervisor.await.unwrap();
+}
+
+/// A switch behind a bridge that loses its first `lost` orders: it answers
+/// « sent » and nothing happens, like Zigbee2MQTT restarting. It also has a
+/// momentary point (a gate's pulse), which no state ever confirms.
+struct DeafSwitch {
+    /// What its owner called it (« Portail » makes it a gate to the guard).
+    name: &'static str,
+    lost: u32,
+    /// An undeclared pulse relay: it reports on, then off at once.
+    falls_back: bool,
+    orders: Arc<AtomicU32>,
+    pulses: Arc<AtomicU32>,
+}
+
+impl Driver for DeafSwitch {
+    fn kind(&self) -> &'static str {
+        "deaf"
+    }
+
+    fn run<'a>(&'a self, ctx: &'a mut DriverCtx) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            let id = ctx.device_id("sw1");
+            ctx.upsert_device(Device {
+                id: id.clone(),
+                instance: ctx.instance().clone(),
+                native_name: self.name.into(),
+                manufacturer: None,
+                model: None,
+                description: None,
+                native_room: None,
+                members: Vec::new(),
+                points: vec![
+                    spec("state", Kind::Binary, true, Semantic::OnOff),
+                    spec("pulse", Kind::Binary, true, Semantic::Other),
+                ],
+            });
+            ctx.set_state(&id, "state", Value::Bool(false));
+            ctx.ready();
+            while let Some(cmd) = ctx.next_command().await {
+                if &*cmd.key == "state" {
+                    let n = self.orders.fetch_add(1, Ordering::SeqCst) + 1;
+                    if n > self.lost {
+                        ctx.set_state(&cmd.device.id, &cmd.key, cmd.value.clone());
+                        if self.falls_back {
+                            ctx.set_state(&cmd.device.id, &cmd.key, Value::Bool(false));
+                        }
+                    }
+                } else {
+                    self.pulses.fetch_add(1, Ordering::SeqCst);
+                    ctx.set_state(&cmd.device.id, &cmd.key, Value::Bool(true));
+                }
+                cmd.reply(Ok(()));
+            }
+            Ok(())
+        })
+    }
+}
+
+/// The hub, a switch losing its first `lost` orders, and its two counters.
+async fn deaf(lost: u32) -> (Hub, CancellationToken, Arc<AtomicU32>, Arc<AtomicU32>) {
+    deaf_switch(lost, false).await
+}
+
+async fn deaf_switch(
+    lost: u32,
+    falls_back: bool,
+) -> (Hub, CancellationToken, Arc<AtomicU32>, Arc<AtomicU32>) {
+    deaf_named("sw1", lost, falls_back).await
+}
+
+async fn deaf_named(
+    name: &'static str,
+    lost: u32,
+    falls_back: bool,
+) -> (Hub, CancellationToken, Arc<AtomicU32>, Arc<AtomicU32>) {
+    let hub = Hub::new(HubOptions::default()).unwrap();
+    let cancel = CancellationToken::new();
+    let orders = Arc::new(AtomicU32::new(0));
+    let pulses = Arc::new(AtomicU32::new(0));
+    spawn_driver(
+        &hub,
+        InstanceId::from("deaf"),
+        Arc::new(DeafSwitch {
+            name,
+            lost,
+            falls_back,
+            orders: Arc::clone(&orders),
+            pulses: Arc::clone(&pulses),
+        }),
+        cancel.clone(),
+    );
+    wait_running(&hub).await;
+    (hub, cancel, orders, pulses)
+}
+
+fn deaf_point(key: &str) -> PointId {
+    PointId::from(format!("deaf:sw1/{key}"))
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_lost_order_to_a_switch_is_sent_again() {
+    let (hub, _cancel, orders, _) = deaf(1).await;
+    hub.command(
+        &deaf_point("state"),
+        Value::Bool(true),
+        Origin::Automation,
+        Some("Lumière".into()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(orders.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        hub.state(&deaf_point("state")).unwrap().value,
+        Value::Bool(false)
+    );
+
+    tokio::time::sleep(moli_runtime::CONFIRM_WINDOW + Duration::from_secs(1)).await;
+    assert_eq!(orders.load(Ordering::SeqCst), 2, "sent again once");
+    assert_eq!(
+        hub.state(&deaf_point("state")).unwrap().value,
+        Value::Bool(true)
+    );
+    let journal = hub.journal(10);
+    assert_eq!(journal.len(), 2);
+    let by = journal[0].actor.as_deref().unwrap();
+    assert!(by.contains("2/5") && by.contains("Lumière"), "{by}");
+    assert_eq!(journal[0].origin, Origin::Automation);
+    assert_eq!(journal[0].outcome, Outcome::Ok);
+
+    // Obeyed: nothing more.
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert_eq!(orders.load(Ordering::SeqCst), 2);
+    assert_eq!(hub.journal(10).len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_obeyed_order_is_never_sent_again() {
+    let (hub, _cancel, orders, _) = deaf(0).await;
+    hub.command(&deaf_point("state"), Value::Bool(true), Origin::Ui, None)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert_eq!(orders.load(Ordering::SeqCst), 1);
+    assert_eq!(hub.journal(10).len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_switch_that_never_obeys_gets_five_sends_then_a_failure() {
+    let (hub, _cancel, orders, _) = deaf(u32::MAX).await;
+    hub.command(&deaf_point("state"), Value::Bool(true), Origin::Ui, None)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert_eq!(orders.load(Ordering::SeqCst), moli_runtime::MAX_SENDS);
+    let journal = hub.journal(20);
+    // The order, its four resends, the failure.
+    assert_eq!(journal.len(), 6);
+    assert!(
+        matches!(&journal[0].outcome, Outcome::Err(e) if e.contains('5')),
+        "{:?}",
+        journal[0].outcome
+    );
+    assert_eq!(journal[0].actor, None);
+
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert_eq!(orders.load(Ordering::SeqCst), moli_runtime::MAX_SENDS);
+    assert_eq!(hub.journal(20).len(), 6);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_newer_order_ends_the_follow_up() {
+    let (hub, _cancel, orders, _) = deaf(u32::MAX).await;
+    hub.command(&deaf_point("state"), Value::Bool(true), Origin::Ui, None)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    // A person changes their mind before the first resend.
+    hub.command(&deaf_point("state"), Value::Bool(false), Origin::Ui, None)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert_eq!(
+        orders.load(Ordering::SeqCst),
+        2,
+        "no resend of the old order"
+    );
+    assert_eq!(hub.journal(10).len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_momentary_point_is_never_sent_again() {
+    let (hub, _cancel, _, pulses) = deaf(0).await;
+    hub.command(&deaf_point("pulse"), Value::Bool(true), Origin::Ui, None)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert_eq!(pulses.load(Ordering::SeqCst), 1);
+    assert_eq!(hub.journal(10).len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_relay_that_falls_back_at_once_is_not_sent_again() {
+    // On for less than a look at its state: its report was heard.
+    let (hub, _cancel, orders, _) = deaf_switch(0, true).await;
+    hub.command(&deaf_point("state"), Value::Bool(true), Origin::Ui, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        hub.state(&deaf_point("state")).unwrap().value,
+        Value::Bool(false)
+    );
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert_eq!(
+        orders.load(Ordering::SeqCst),
+        1,
+        "a gate must not open twice"
+    );
+    assert_eq!(hub.journal(10).len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn another_points_report_does_not_confirm_an_order() {
+    let (hub, _cancel, orders, _) = deaf(1).await;
+    hub.command(&deaf_point("state"), Value::Bool(true), Origin::Ui, None)
+        .await
+        .unwrap();
+    // Its neighbour says « on »: that is not the switch obeying.
+    hub.command(&deaf_point("pulse"), Value::Bool(true), Origin::Ui, None)
+        .await
+        .unwrap();
+    tokio::time::sleep(moli_runtime::CONFIRM_WINDOW + Duration::from_secs(1)).await;
+    assert_eq!(
+        orders.load(Ordering::SeqCst),
+        2,
+        "the lost order went again"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_gate_is_never_sent_again() {
+    // Its relay moved, its report was lost: sent again, it would close.
+    let (hub, _cancel, orders, _) = deaf_named("Portail", u32::MAX, false).await;
+    hub.command(&deaf_point("state"), Value::Bool(true), Origin::Ui, None)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert_eq!(orders.load(Ordering::SeqCst), 1, "a gate's order goes once");
+    assert_eq!(hub.journal(10).len(), 1);
+}
+
+/// A device that copies another's readings (the « Dehors » weather): its
+/// values keep the time they were read at.
+struct Copier;
+
+impl Driver for Copier {
+    fn kind(&self) -> &'static str {
+        "copier"
+    }
+
+    fn run<'a>(&'a self, ctx: &'a mut DriverCtx) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            let id = ctx.device_id("copy");
+            let numeric = Kind::Numeric {
+                min: None,
+                max: None,
+                step: None,
+            };
+            ctx.upsert_device(Device {
+                id: id.clone(),
+                instance: ctx.instance().clone(),
+                native_name: "copy".into(),
+                manufacturer: None,
+                model: None,
+                description: None,
+                native_room: None,
+                members: Vec::new(),
+                points: vec![
+                    spec("copied", numeric.clone(), false, Semantic::Temperature),
+                    spec("own", numeric, false, Semantic::Temperature),
+                ],
+            });
+            // The same reading, then read again later, then the same again.
+            ctx.set_state_at(&id, "copied", Value::Int(12), 1_000);
+            ctx.set_state_at(&id, "copied", Value::Int(12), 2_000);
+            ctx.set_state_at(&id, "copied", Value::Int(12), 2_000);
+            // An older reading of the same value (another source's, kept as
+            // the last known): its age goes back.
+            ctx.set_state_at(&id, "copied", Value::Int(12), 1_500);
+            // set_state as before: now, and no event when nothing changed.
+            ctx.set_state(&id, "own", Value::Int(7));
+            ctx.set_state(&id, "own", Value::Int(7));
+            ctx.ready();
+            while let Some(cmd) = ctx.next_command().await {
+                cmd.reply(Ok(()));
+            }
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_copied_value_keeps_the_time_it_was_read_at() {
+    let hub = Hub::new(HubOptions::default()).unwrap();
+    let mut events = hub.subscribe();
+    let cancel = CancellationToken::new();
+    let before = moli_core::now_ms();
+    spawn_driver(
+        &hub,
+        InstanceId::from("copier"),
+        Arc::new(Copier),
+        cancel.clone(),
+    );
+    wait_running(&hub).await;
+
+    let copied = hub.state(&PointId::from("copier:copy/copied")).unwrap();
+    assert_eq!(copied.value, Value::Int(12));
+    assert_eq!(copied.ts, 1_500, "the time given is kept, not now");
+    let own = hub.state(&PointId::from("copier:copy/own")).unwrap();
+    assert!(own.ts >= before, "set_state still records now");
+
+    // A newer reading of the same value is no change (#230): its age moves
+    // through `Seen`, at most every five minutes, so not seconds later. The
+    // same reading twice, or set_state with the same value, is nothing. An
+    // older reading is a change: the age shown must go back.
+    let mut copied_events = 0;
+    let mut own_events = 0;
+    while let Ok(Ok(event)) = tokio::time::timeout(Duration::from_millis(50), events.recv()).await {
+        if let Event::State { point, .. } = event {
+            match point.as_str() {
+                "copier:copy/copied" => copied_events += 1,
+                "copier:copy/own" => own_events += 1,
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(copied_events, 2);
+    assert_eq!(own_events, 1);
+    cancel.cancel();
 }

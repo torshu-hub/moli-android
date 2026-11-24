@@ -96,7 +96,7 @@
   const tintInk = $derived.by(() => {
     if (!tint) return null;
     const [r, g, b] = [1, 3, 5].map((i) => parseInt(tint.slice(i, i + 2), 16) / 255);
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.6 ? '#3a2a10' : '#fff';
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.6 ? 'var(--warm-deep)' : '#fff';
   });
 
   // [catalogue key of its name, kelvin, look]; and [key, colour sent to the lamp].
@@ -187,6 +187,14 @@
     if (!colorPoint) return setLook(members, { color: c.toLowerCase() }, label);
     act(`${id}/color`, c.toLowerCase(), label);
   }
+
+  // A flame the lamp (or its driver) can play: a mode next to the colours.
+  // Any colour or white picked afterwards ends it.
+  const canFlame = $derived(!!writable('effect')?.kind?.values?.includes('flame'));
+  const flaming = $derived(value(id, 'effect') === 'flame');
+  function flame() {
+    act(`${id}/effect`, flaming ? 'no_effect' : 'flame', label);
+  }
 </script>
 
 <div class="tile" class:on class:busy class:off-grid={!ok || !d || cut} class:compact>
@@ -258,6 +266,11 @@
             <input type="color" value={hex ?? '#ffffff'} onchange={(e) => paint(e.currentTarget.value)} aria-label={t('commun.lampe.autre_couleur')} />
           </label>
         {/if}
+        {#if canFlame}
+          <button class="mode" class:on={flaming} onclick={flame} aria-pressed={flaming}>
+            <Icon name="fire" size={18} /><span>{t('commun.lampe.flamme')}</span>
+          </button>
+        {/if}
       </div>
     {/if}
     {#if apart}
@@ -285,6 +298,26 @@
 </div>
 
 <style>
+  .mode {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 999px;
+    background: var(--surface-3);
+    color: var(--ink-2);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .mode.on {
+    background: var(--warm);
+    color: var(--warm-deep);
+  }
+
   .fan {
     display: flex;
     align-items: center;
@@ -310,7 +343,7 @@
 
   .fan-toggle.on {
     background: var(--cool);
-    color: #fff;
+    color: var(--on-cool);
   }
 
   .spin .fan-toggle :global(svg) {
@@ -365,7 +398,7 @@
 
   .apart.open {
     background: var(--warm);
-    color: #fff;
+    color: var(--on-warm);
   }
 
   .bulbs {
@@ -431,7 +464,7 @@
 
   .on .bulb {
     background: var(--warm);
-    color: #fff;
+    color: var(--warm-deep);
     box-shadow: 0 0 0 6px var(--glow, var(--warm-glow)), 0 6px 22px var(--glow, var(--warm-glow));
   }
 

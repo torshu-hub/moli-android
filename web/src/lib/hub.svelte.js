@@ -1,5 +1,5 @@
 import { setLanguage, t } from './i18n.svelte.js';
-import { applyDriverStatus, applyDriverRegistration } from './driver-status.js';
+import { applyDriverStatus, applyDriverRegistration, applyDriverUnregistration } from './driver-status.js';
 
 // Live model of the hub, fed by /api/events (SSE) and /api/health.
 
@@ -89,14 +89,32 @@ function applyEvent(e) {
       if (e.point in hub.pending && hub.pending[e.point] === e.value) delete hub.pending[e.point];
       break;
     }
+    case 'seen': {
+      // The same value, read again (#230): only its age moves. Not a change:
+      // nothing flashes, no command is confirmed.
+      const [id, key] = splitPoint(e.point);
+      const sample = hub.devices[id]?.state?.[key];
+      if (sample && e.ts > (sample.ts ?? 0)) sample.ts = e.ts;
+      break;
+    }
     case 'availability':
       if (hub.devices[e.device]) hub.devices[e.device].online = e.online;
       break;
-    case 'label_changed':
-      if (hub.devices[e.device]) hub.devices[e.device].label = e.label;
+    case 'label_changed': {
+      const d = hub.devices[e.device];
+      if (!d) break;
+      const moved = (d.label?.room ?? null) !== (e.label?.room ?? null);
+      d.label = e.label;
+      // A new room may be outside: `/api/home` says which (#217).
+      if (moved) hub.layoutRevision += 1;
       break;
+    }
     case 'driver_registered':
       applyDriverRegistration(hub.drivers, e);
+      hub.driverRevision += 1;
+      break;
+    case 'driver_unregistered':
+      applyDriverUnregistration(hub.drivers, e);
       hub.driverRevision += 1;
       break;
     case 'layout_changed':
@@ -259,21 +277,27 @@ export async function command(point, value) {
 }
 
 /** A human approves or denies an order the guard held (naming the point
- *  shown on the card, so a decision never lands on another request). */
-export async function decide(request, approve) {
+ *  shown on the card, so a decision never lands on another request).
+ *  `quiet`: a refusal is returned as its message instead of a notice (a
+ *  wrong code is said beside the field). */
+export async function decide(request, approve, pin, { quiet = false } = {}) {
   try {
     const res = await fetch(`/api/approvals/${request.id}`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ approve, point: request.point }),
+      // The code typed for it: some orders want it each time (disarming).
+      body: JSON.stringify(pin ? { approve, point: request.point, pin } : { approve, point: request.point }),
     });
     // Gone: already decided or expired — the card can go.
     if (res.ok || res.status === 410) {
       hub.approvals = hub.approvals.filter((a) => a.id !== request.id);
     }
-    if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? res.statusText);
+    return true;
   } catch (err) {
+    if (quiet) return err.message || 'error';
     toast(t('systeme.hub.decision_non_appliquee', { message: err.message }));
+    return false;
   }
 }
 
@@ -304,6 +328,24 @@ export async function login(pin) {
 export async function logout() {
   await fetch('/api/session', { method: 'DELETE', headers }).catch(() => {});
   await refreshSession();
+}
+
+/** A point's own name (a power strip's outlet); `''` forgets it. True once saved. */
+export async function setPointLabel(id, key, name) {
+  try {
+    const res = await fetch(`/api/labels/${encodeURIComponent(id)}/points/${encodeURIComponent(key)}`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
+    const d = hub.devices[id];
+    if (d) d.label = await res.json();
+    return true;
+  } catch (err) {
+    toast(t('systeme.hub.etiquette_non_enregistree', { message: err.message }));
+    return false;
+  }
 }
 
 export async function setLabel(id, label) {

@@ -18,6 +18,8 @@ mod hub;
 mod journal_log;
 mod labels;
 pub mod media;
+mod private_state;
+mod private_state_handle;
 mod secrets;
 mod state_cache;
 mod stats;
@@ -27,10 +29,11 @@ pub mod voice;
 pub use addresses::KnownAddress;
 pub use driver::{BoxFuture, CommandRequest, Driver, DriverCtx, MediaPublisher};
 pub use hub::{
-    ApprovalError, CORE_NAMESPACE, CommandError, DeviceView, DriverView, Hub, HubOptions,
-    LabelError, LabelPatch, MAX_LABEL, MAX_PENDING, MAX_PENDING_PER_CALLER, Opener, Snapshot,
-    opener,
+    ApprovalError, CONFIRM_WINDOW, CORE_NAMESPACE, CommandError, DeviceView, DriverView, Hub,
+    HubOptions, LabelError, LabelPatch, MAX_LABEL, MAX_PENDING, MAX_PENDING_PER_CALLER, MAX_SENDS,
+    Opener, Snapshot, opener,
 };
-pub use secrets::{DurableLease, DurableSecrets, MasterKey, forget_secret, set_secret};
+pub use private_state_handle::PrivateState;
+pub use secrets::{DurableLease, DurableSecrets, MasterKey, forget_secret, get_secret, set_secret};
 pub use stats::Stats;
 pub use supervisor::spawn_driver;
