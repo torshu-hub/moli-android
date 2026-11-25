@@ -1,5 +1,7 @@
 <script>
+  import { onMount } from 'svelte';
   import { home, hub, confirmHeld, dismissHeld, refreshSession } from '../lib/home.svelte.js';
+  import { fingerprintAvailable, pinSaved, unlockPin, rememberPin, forgetPin, offerPin } from '../lib/native-pin.js';
   import { t } from '../../lib/i18n.svelte.js';
   import Icon from './Icon.svelte';
 
@@ -21,6 +23,9 @@
   let current = '';
   // The shortest code the house accepts (six digits without an owner).
   const min = $derived(hub.session?.min_pin ?? 4);
+  // In the Moli app: the code kept behind the fingerprint (lib/native-pin.js).
+  const fingerprint = fingerprintAvailable();
+  let saved = $state(pinSaved());
 
   // The guard's reason is the house's own words (French or English): the
   // patterns recognise it, the sentence shown is ours.
@@ -31,8 +36,16 @@
       ? mode === 'new'
         ? t('commun.code.choisir', { min })
         : t('commun.code.seconde_fois')
+      : /chaque fois|each time/i.test(home.held?.reason ?? '')
+        ? t('commun.code.raison_chaque_fois')
       : /automatisme|automation/i.test(home.held?.reason ?? '')
         ? t('commun.code.raison_automatisme')
+        : home.held?.reason === 'airzone_control'
+          ? t('airzone_gateways.control_pin')
+        : home.held?.reason === 'airzone_read_only'
+          ? t('airzone_gateways.read_only_pin')
+        : home.held?.reason === 'discovery'
+          ? t('airzone_wizard.discovery_pin')
         : /configuration/i.test(home.held?.reason ?? '')
           ? t('commun.code.raison_configuration')
         : /calme|quiet/i.test(home.held?.reason ?? '')
@@ -58,6 +71,27 @@
     await refreshSession();
     return null;
   }
+
+  /** The kept code, unlocked by the fingerprint, sent as if typed. A code the
+   *  house refuses was changed since: forgotten, the keypad takes over. */
+  async function unlock() {
+    if (busy || !saved) return;
+    const code = await unlockPin();
+    // Cancelled, or the app forgot it (fingerprints changed): read it again.
+    if (!code) return void (saved = pinSaved());
+    busy = true;
+    error = (await confirmHeld(code)) ?? '';
+    if (error === t('commun.code_incorrect')) {
+      forgetPin();
+      saved = false;
+      error = t('commun.code.empreinte_perime');
+    }
+    busy = false;
+  }
+
+  onMount(() => {
+    if (mode === 'enter' && saved) unlock();
+  });
 
   async function submit() {
     if (pin.length < 4 || busy) return;
@@ -92,13 +126,18 @@
         if (!error) {
           current = '';
           mode = 'enter';
+          // The fingerprint keeps the new code from now on.
+          if (saved) rememberPin(pin);
           // The new code opens the session, and what was waiting goes on.
           error = (await confirmHeld(pin)) ?? '';
         }
       }
       first = '';
     } else {
-      error = (await confirmHeld(pin)) ?? '';
+      const code = pin;
+      error = (await confirmHeld(code)) ?? '';
+      // Right code, typed: the app may offer, once, to keep it behind the fingerprint.
+      if (!error && fingerprint && !saved) offerPin(code);
     }
     busy = false;
     pin = '';
@@ -120,7 +159,9 @@
   <h2>{mode === 'enter' ? (home.held?.label ?? t('commun.code.cette_action')) : mode === 'current' ? t('commun.code.actuel') : t('commun.code.nouveau')}</h2>
   <p class="why">{reason}</p>
   <div class="dots" aria-label={t('commun.code.saisis', { count: pin.length })}>
-    {#each Array(Math.max(mode === 'enter' || mode === 'current' ? 6 : 4, pin.length)) as _, i (i)}
+    <!-- Typing a known code: one dot per digit and one for the next, never a
+         length the code may not have. Choosing one: the shortest allowed. -->
+    {#each Array(Math.min(8, Math.max(mode === 'enter' || mode === 'current' ? pin.length + 1 : min, pin.length))) as _, i (i)}
       <i class:filled={i < pin.length}></i>
     {/each}
   </div>
@@ -133,6 +174,11 @@
     <button onclick={() => press('0')}>0</button>
     <button class="ok" onclick={submit} disabled={pin.length < 4 || busy} aria-label={t('commun.valider')}>OK</button>
   </div>
+  {#if fingerprint && saved && mode === 'enter'}
+    <button class="finger" onclick={unlock} disabled={busy}>
+      <Icon name="fingerprint" size={22} />{t('commun.code.empreinte')}
+    </button>
+  {/if}
   {#if hub.session?.owner && mode === 'enter'}
     <button class="link" onclick={() => ((mode = 'new'), (pin = ''), (error = ''))}>{t('commun.code.nouveau_choisir')}</button>
   {/if}
@@ -245,6 +291,23 @@
 
   .pad .ok:disabled {
     opacity: 0.35;
+  }
+
+  .finger {
+    margin-top: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--cool-soft);
+    color: var(--cool);
+    font-weight: 650;
+    padding: 10px 18px;
+  }
+
+  .finger:disabled {
+    opacity: 0.5;
   }
 
   .link {

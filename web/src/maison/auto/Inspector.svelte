@@ -130,6 +130,12 @@
       <Fields kind="time" value={node.at} onchange={(v) => set({ at: v })} />
       <span class="lbl">{t('automatismes.inspecteur.quels_jours')}</span>
       <Fields kind="days" value={node.days} onchange={(v) => set({ days: v })} />
+      <span class="lbl">{t('automatismes.inspecteur.une_semaine_sur')}</span>
+      <input type="number" min="1" max="8" value={node.weeks ?? 1} onchange={(e) => set({ weeks: Math.min(8, Math.max(1, Number(e.currentTarget.value) || 1)) })} />
+      {#if (node.weeks ?? 1) > 1}
+        <span class="lbl">{t('automatismes.inspecteur.a_partir_de')}</span>
+        <input type="date" value={node.from ?? ''} onchange={(e) => set({ from: e.currentTarget.value || null })} />
+      {/if}
     {:else if node.type === 'at_sun'}
       <div class="seg">
         <button class:on={node.event === 'rise'} onclick={() => set({ event: 'rise' })}><Icon name="sunrise" size={16} />{t('automatismes.inspecteur.lever')}</button>
@@ -244,12 +250,12 @@
     color: #e9a23b;
   }
   .logic .tile {
-    background: color-mix(in srgb, #4b74f2 14%, var(--surface));
-    color: #4b74f2;
+    background: color-mix(in srgb, var(--cool) 14%, var(--surface));
+    color: var(--cool);
   }
   .action .tile {
-    background: color-mix(in srgb, #2c9a88 14%, var(--surface));
-    color: #2c9a88;
+    background: color-mix(in srgb, var(--good) 14%, var(--surface));
+    color: var(--good);
   }
   .notify .tile {
     background: color-mix(in srgb, #b05fd8 14%, var(--surface));

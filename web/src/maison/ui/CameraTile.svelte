@@ -5,11 +5,14 @@
   import Icon from './Icon.svelte';
 
   /** A camera image, refreshed every `refresh` seconds while visible.
-   *  Battery cameras refresh only when asked: every image wakes them. */
-  let { id, name, refresh = 10, battery = false, big = false, onopen = null } = $props();
+   *  Battery cameras refresh only when asked: every image wakes them.
+   *  `onsize(w, h)`: the image's proportions, as each one shows. */
+  let { id, name, refresh = 10, battery = false, big = false, onopen = null, onsize = null } = $props();
 
   /** Never two automatic images closer than this, whatever re-runs. */
   const MIN_GAP = 1000;
+  /** An image that has not come in this long is given up. */
+  const LOAD_TIMEOUT = 10_000;
 
   let src = $state(null);
   let loading = $state(false);
@@ -30,8 +33,13 @@
     if (!asked && Date.now() - lastAt < MIN_GAP) return;
     lastAt = Date.now();
     loading = true;
+    // A request left hanging (Moli restarting, a slow camera, the browser's
+    // connections all taken) must not freeze the tile: given up after 10 s,
+    // the next round asks again.
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), LOAD_TIMEOUT);
     try {
-      const res = await fetch(`/api/devices/${encodeURIComponent(id)}/snapshot`);
+      const res = await fetch(`/api/devices/${encodeURIComponent(id)}/snapshot`, { signal: abort.signal });
       if (!res.ok) throw new Error(res.status);
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -52,6 +60,7 @@
     } catch {
       failed = true;
     } finally {
+      clearTimeout(timer);
       loading = false;
     }
   }
@@ -96,7 +105,7 @@
 <figure class="cam" class:big>
   <button class="frame" onclick={() => (onopen ? onopen(id) : load(true))} aria-label={t(onopen ? 'salon.camera.agrandir' : 'salon.camera.actualiser', { nom: name })}>
     {#if src}
-      <img {src} alt={t('salon.camera.image', { nom: name })} />
+      <img {src} alt={t('salon.camera.image', { nom: name })} onload={(e) => onsize?.(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)} />
     {:else}
       <span class="placeholder"><Icon name="cctv" size={34} /><small>{failed ? t('salon.camera.indisponible') : t('salon.camera.chargement')}</small></span>
     {/if}

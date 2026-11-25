@@ -16,6 +16,9 @@ __pycache__/
 /tools/model/train/logs-*.log
 /tools/model/train/*.jsonl
 
+# Local build output of the self-contained third-party workspace.
+/vendor/matter-rust/target/
+
 .gradle/
 android/**/build/
 android/app/src/main/jniLibs/

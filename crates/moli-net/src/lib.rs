@@ -322,8 +322,13 @@ impl PinnedTls {
 pub struct PinnedHttps {
     host: String,
     port: u16,
+    /// The name the certificate must bear: `host`, unless the appliance is
+    /// reached at a local address under a certificate for a public name
+    /// (`with_roots`).
+    name: String,
     tls: TlsConnector,
-    pinned: PinnedTls,
+    /// The pin (trust on first use); `None` with an authority of its own.
+    pinned: Option<PinnedTls>,
     conn: tokio::sync::Mutex<Option<SendRequest<Full<Bytes>>>>,
     /// Long requests (camera images) keep their own connection between
     /// calls: a new TLS handshake for every image was most of their cost.
@@ -347,8 +352,41 @@ impl PinnedHttps {
         Ok(Self {
             host: host.to_owned(),
             port,
+            name: host.to_owned(),
             tls: TlsConnector::from(Arc::clone(&pinned.config)),
-            pinned,
+            pinned: Some(pinned),
+            conn: tokio::sync::Mutex::new(None),
+            slow: tokio::sync::Mutex::new(None),
+        })
+    }
+
+    /// An appliance whose certificate its maker signs with an authority of
+    /// its own (`roots_pem`, published by the maker): checked in full (chain,
+    /// dates, `name`), nothing pinned, so a certificate renewed every few
+    /// months is taken as it comes. Reached at `host`, while the certificate
+    /// bears `name` (a Freebox answers on its local address under its public
+    /// domain).
+    pub fn with_roots(host: &str, port: u16, name: &str, roots_pem: &str) -> anyhow::Result<Self> {
+        use rustls::pki_types::pem::PemObject as _;
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(roots_pem.as_bytes()) {
+            roots.add(cert.context("authority certificate (PEM)")?)?;
+        }
+        if roots.is_empty() {
+            bail!("no authority certificate in the PEM");
+        }
+        ServerName::try_from(name.to_owned()).context("certificate name")?;
+        let config =
+            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()?
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+        Ok(Self {
+            host: host.to_owned(),
+            port,
+            name: name.to_owned(),
+            tls: TlsConnector::from(Arc::new(config)),
+            pinned: None,
             conn: tokio::sync::Mutex::new(None),
             slow: tokio::sync::Mutex::new(None),
         })
@@ -361,12 +399,12 @@ impl PinnedHttps {
 
     /// Fingerprint of the certificate presented during the last handshake.
     pub fn seen_fingerprint(&self) -> Option<String> {
-        self.pinned.seen_fingerprint()
+        self.pinned.as_ref().and_then(PinnedTls::seen_fingerprint)
     }
 
     /// Fingerprint enforced: the one given, or the first one seen.
     pub fn pinned_fingerprint(&self) -> Option<String> {
-        self.pinned.pinned_fingerprint()
+        self.pinned.as_ref().and_then(PinnedTls::pinned_fingerprint)
     }
 
     /// A request builder with the `host` header set.
@@ -398,7 +436,7 @@ impl PinnedHttps {
                 .with_time(Duration::from_secs(60))
                 .with_interval(Duration::from_secs(15)),
         )?;
-        let name = ServerName::try_from(self.host.clone()).context("host name")?;
+        let name = ServerName::try_from(self.name.clone()).context("host name")?;
         let tls = tokio::time::timeout(TIMEOUT, self.tls.connect(name, tcp))
             .await
             .context("tls handshake timeout")?
@@ -560,6 +598,39 @@ impl PinnedHttps {
         Ok(())
     }
 
+    /// One request on a connection of its own, the whole answer: status,
+    /// headers (a session cookie) and body (at most [`MAX_BODY`]).
+    pub async fn exchange_full(
+        &self,
+        request: Request<Full<Bytes>>,
+        wait: Duration,
+    ) -> anyhow::Result<(StatusCode, http::HeaderMap, Bytes)> {
+        let mut sender = self.connect().await?;
+        let response = tokio::time::timeout(wait, sender.send_request(request))
+            .await
+            .with_context(|| format!("{} did not answer in time", self.host))??;
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = tokio::time::timeout(wait, read_body(response.into_body(), MAX_BODY))
+            .await
+            .with_context(|| format!("{} did not answer in time", self.host))??;
+        Ok((status, headers, body))
+    }
+
+    /// A long answer (a video) on a connection of its own, whatever its
+    /// status: its head within `wait`, its body streamed as it comes.
+    pub async fn stream_response(
+        &self,
+        request: Request<Full<Bytes>>,
+        wait: Duration,
+    ) -> anyhow::Result<http::Response<Incoming>> {
+        let mut sender = self.connect().await?;
+        tokio::time::timeout(wait, sender.send_request(request))
+            .await
+            .with_context(|| format!("{} did not answer in time", self.host))?
+            .map_err(Into::into)
+    }
+
     /// A long-lived response (event stream) on a dedicated connection. Its
     /// length has no end by design: the caller bounds what it buffers.
     pub async fn stream(&self, request: Request<Full<Bytes>>) -> anyhow::Result<Incoming> {
@@ -630,11 +701,39 @@ pub async fn plain_with_headers(
     port: u16,
     request: Request<Full<Bytes>>,
 ) -> anyhow::Result<(StatusCode, http::HeaderMap, Bytes)> {
+    plain_waiting(host, port, request, TIMEOUT).await
+}
+
+/// One plain-HTTP request that may take longer than [`TIMEOUT`] to answer
+/// (a WebRTC peer gathering its addresses before it answers an offer).
+pub async fn plain_within(
+    host: &str,
+    port: u16,
+    request: Request<Full<Bytes>>,
+    wait: Duration,
+) -> anyhow::Result<(StatusCode, Bytes)> {
+    plain_waiting(host, port, request, wait)
+        .await
+        .map(|(status, _, body)| (status, body))
+}
+
+async fn plain_waiting(
+    host: &str,
+    port: u16,
+    request: Request<Full<Bytes>>,
+    wait: Duration,
+) -> anyhow::Result<(StatusCode, http::HeaderMap, Bytes)> {
     let exchange = async {
         let tcp = TcpStream::connect((host, port))
             .await
             .with_context(|| format!("cannot reach {host}:{port}"))?;
-        let (mut sender, connection) = http1::handshake(TokioIo::new(tcp)).await?;
+        // Embedded HTTP servers are not always RFC-tolerant: a Tapo L530
+        // answers 400 to `content-length:` and 200 to `Content-Length:`
+        // (as Daikin's BRP069 does for `host:`, see moli-profile).
+        let (mut sender, connection) = http1::Builder::new()
+            .title_case_headers(true)
+            .handshake(TokioIo::new(tcp))
+            .await?;
         tokio::spawn(async move {
             let _ = connection.await;
         });
@@ -644,9 +743,26 @@ pub async fn plain_with_headers(
         let body = read_body(response.into_body(), MAX_BODY).await?;
         anyhow::Ok((status, headers, body))
     };
-    tokio::time::timeout(TIMEOUT, exchange)
+    tokio::time::timeout(wait, exchange)
         .await
         .with_context(|| format!("{host} did not answer in time"))?
+}
+
+/// Connection establishment failed before any HTTP request could be sent.
+/// Only the TCP/DNS stage can produce this marker; timeouts after connection
+/// and response failures remain ambiguous for rotating credentials.
+#[derive(Debug)]
+pub struct RequestNotDispatched(std::io::Error);
+
+impl std::fmt::Display for RequestNotDispatched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("request not dispatched: connection failed")
+    }
+}
+impl std::error::Error for RequestNotDispatched {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
 }
 
 /// One request to a web API (an LLM, a cloud service), on its own
@@ -735,6 +851,7 @@ async fn web_response(
     let exchange = async {
         let tcp = TcpStream::connect((host, port))
             .await
+            .map_err(RequestNotDispatched)
             .with_context(|| format!("cannot reach {host}:{port}"))?;
         let response = if tls {
             let name = ServerName::try_from(host.to_owned()).context("host name")?;
@@ -853,6 +970,43 @@ mod pin_tests {
 }
 
 #[cfg(test)]
+mod plain_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    #[tokio::test]
+    async fn lan_requests_send_title_case_headers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let device = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = socket.read(&mut buf).await.unwrap();
+                seen.extend_from_slice(&buf[..n]);
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&seen).into_owned()
+        });
+        let request = Request::post("/app/handshake1")
+            .header("host", "127.0.0.1")
+            .header("content-type", "application/octet-stream")
+            .body(Full::new(Bytes::from_static(&[0; 16])))
+            .unwrap();
+        let (status, _) = plain("127.0.0.1", port, request).await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+        let head = device.await.unwrap();
+        for header in ["Host: ", "Content-Type: ", "Content-Length: 16"] {
+            assert!(head.contains(header), "{header:?} missing from {head:?}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod body_tests {
     use super::*;
 
@@ -885,5 +1039,155 @@ mod web_url_tests {
         assert_eq!((l.tls, l.port, l.path.as_str()), (false, 5678, "/"));
         assert!(WebUrl::parse("ftp://x").is_err());
         assert!(WebUrl::parse("https://user@host/").is_err());
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    fn request() -> Request<Full<Bytes>> {
+        Request::builder()
+            .method("POST")
+            .uri("/rotate")
+            .body(Full::new(Bytes::from_static(b"test")))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn refused_connection_is_provably_not_dispatched() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let error = web_with_headers(
+            "127.0.0.1",
+            port,
+            false,
+            request(),
+            Duration::from_secs(2),
+            1024,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.is::<RequestNotDispatched>());
+    }
+
+    #[tokio::test]
+    async fn failed_name_resolution_is_provably_not_dispatched() {
+        let error = web_with_headers(
+            "invalid hostname",
+            443,
+            true,
+            request(),
+            // Longer than a failed lookup: musl waits out its 5 s resolver
+            // timeout even when the server refuses at once.
+            Duration::from_secs(30),
+            1024,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.is::<RequestNotDispatched>());
+    }
+
+    #[tokio::test]
+    async fn lost_response_and_deadline_after_connection_are_ambiguous() {
+        for lose_response in [true, false] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = [0u8; 1024];
+                let read = tokio::io::AsyncReadExt::read(&mut stream, &mut bytes)
+                    .await
+                    .unwrap();
+                assert!(read > 0);
+                if !lose_response {
+                    std::future::pending::<()>().await;
+                }
+            });
+            let error = web_with_headers(
+                "127.0.0.1",
+                port,
+                false,
+                request(),
+                Duration::from_millis(100),
+                1024,
+            )
+            .await
+            .unwrap_err();
+            assert!(!error.is::<RequestNotDispatched>());
+            server.abort();
+        }
+    }
+
+    /// A certificate signed by the maker's own authority: taken with that
+    /// authority and the name it bears (reached at another address), refused
+    /// with another name or another authority. Nothing is pinned.
+    #[tokio::test]
+    async fn an_authority_of_its_own_checks_the_chain_and_the_name() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let authority = |name: &str| {
+            let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+            params
+                .distinguished_name
+                .push(rcgen::DnType::CommonName, name);
+            params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            rcgen::CertifiedIssuer::self_signed(params, rcgen::KeyPair::generate().unwrap())
+                .unwrap()
+        };
+        let maker = authority("Maker Root CA");
+        let stranger = authority("Another Root CA");
+        let box_key = rcgen::KeyPair::generate().unwrap();
+        let leaf = rcgen::CertificateParams::new(vec!["box.example".to_owned()])
+            .unwrap()
+            .signed_by(&box_key, &maker)
+            .unwrap();
+        let server = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![leaf.der().clone()],
+            rustls::pki_types::PrivatePkcs8KeyDer::from(box_key.serialize_der()).into(),
+        )
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+            while let Ok((socket, _)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    let Ok(mut stream) = acceptor.accept(socket).await else {
+                        return;
+                    };
+                    let mut buf = vec![0; 4096];
+                    let _ = stream.read(&mut buf).await;
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+                        .await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        let get = |https: &PinnedHttps| empty(https.request(http::Method::GET, "/")).unwrap();
+
+        let good = PinnedHttps::with_roots("127.0.0.1", port, "box.example", &maker.pem()).unwrap();
+        let (status, body) = good.send(get(&good)).await.unwrap();
+        assert_eq!((status.as_u16(), &body[..]), (200, &b"ok"[..]));
+        assert_eq!(good.seen_fingerprint(), None, "nothing pinned");
+
+        let name =
+            PinnedHttps::with_roots("127.0.0.1", port, "other.example", &maker.pem()).unwrap();
+        assert!(name.send(get(&name)).await.is_err(), "another name");
+        let stranger =
+            PinnedHttps::with_roots("127.0.0.1", port, "box.example", &stranger.pem()).unwrap();
+        assert!(
+            stranger.send(get(&stranger)).await.is_err(),
+            "another authority"
+        );
+        assert!(PinnedHttps::with_roots("127.0.0.1", port, "box.example", "").is_err());
     }
 }

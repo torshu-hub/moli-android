@@ -25,14 +25,20 @@ mod integrations;
 mod limit;
 mod machines;
 mod mcp;
+mod overkiz;
 mod people;
 mod people_api;
 mod whereabouts;
 
 pub use whereabouts::INSTANCE as PEOPLE_INSTANCE;
+pub mod airzone_setup;
+mod appli;
+pub mod device_setup;
+mod outside;
 mod phones;
 mod plan;
 mod rest;
+mod review;
 mod session;
 pub mod settings;
 mod sse;
@@ -58,6 +64,7 @@ pub use plan::image_name_ok as plan_image_name_ok;
 const BODY: usize = 256 * 1024;
 /// Recorded speech, a Home Assistant export.
 const BIG_BODY: usize = 4 * 1024 * 1024;
+pub use mcp::tool_names as mcp_tool_names;
 pub use session::UiPin;
 
 /// The household's people (`data/people.json`, their sessions), shared by
@@ -100,6 +107,10 @@ impl Household {
 /// Surface settings.
 #[derive(Clone, Debug, Default)]
 pub struct Options {
+    /// Bounded human-only Airzone onboarding, owned by the executable.
+    pub airzone_setup: Option<Arc<dyn airzone_setup::AirzoneSetup>>,
+    /// A device added by its address from the dashboard, owned by the executable.
+    pub device_setup: Option<Arc<dyn device_setup::DeviceSetup>>,
     /// Host names (or IPs) this instance is reached by, besides localhost.
     pub allowed_hosts: Vec<String>,
     /// PIN that opens a human session in the dashboard. `None`: nobody is
@@ -125,6 +136,9 @@ pub struct Options {
     /// A demo house (no real devices): anyone is let in, as a visitor
     /// (`[server] demo = true`).
     pub demo: bool,
+    /// MCP tools the house switched off (`[mcp] disabled_tools`): neither
+    /// listed nor callable, on `/mcp` as on `/mcp/readonly`.
+    pub mcp_disabled_tools: Vec<String>,
     /// The household's people; none: opened from `home_path`'s folder.
     pub household: Option<Household>,
     /// The household's phones (the Moli app), when a `phones` driver runs.
@@ -137,6 +151,9 @@ pub struct Options {
     /// The house's time zone (IANA), as resolved at start: shown in
     /// `/api/system`.
     pub timezone: Option<String>,
+    /// Explicit enabled cloud observers; no credentials.
+    pub overkiz_cloud:
+        std::collections::BTreeMap<moli_core::InstanceId, moli_overkiz::cloud::Config>,
 }
 
 /// Builds the complete HTTP application. Live streams end when `shutdown`
@@ -167,6 +184,13 @@ fn device_routes() -> Router<Hub> {
         )
         .route("/api/devices/{id}/snapshot", get(rest::snapshot))
         .route("/api/devices/{id}/live", post(rest::live))
+        .route("/api/devices/{id}/review", get(review::timeline))
+        .route("/api/devices/{id}/review/zones", get(review::zones))
+        .route(
+            "/api/devices/{id}/review/events/{event}/{what}",
+            get(review::event),
+        )
+        .route("/api/devices/{id}/review/recording", get(review::recording))
         .route(
             "/api/devices/{id}/print",
             post(rest::print).layer(DefaultBodyLimit::max(rest::MAX_PAGE)),
@@ -193,6 +217,11 @@ fn house_routes(humans: &Arc<session::Sessions>, options: &Options) -> Router<Hu
         .route("/api/plan/images/{name}", get(plan::image))
         .route("/api/mobile/register", post(phones::register))
         .route("/api/phones/{id}/report", post(phones::report))
+        // The app's own update, and its Google sign-in handoff (appli.rs).
+        .route("/api/phones/{id}/app", get(appli::latest))
+        .route("/api/phones/{id}/app.apk", get(appli::apk))
+        .route("/api/phones/handoff", post(appli::trade))
+        .route("/api/mobile/handoff", get(appli::start))
         // Under /api/mobile: behind Cloudflare Access like the dashboard
         // (/api/phones is the phones' own way in, Access lets it through).
         .route("/api/mobile/phones", get(phones::list))
@@ -321,7 +350,61 @@ fn assistant_routes() -> Router<Hub> {
         .route("/api/assistant/key", put(assistant::set_key))
 }
 
+fn integration_routes(humans: &Arc<session::Sessions>, options: &Options) -> Router<Hub> {
+    Router::new()
+        .route(
+            "/api/integrations/airzone/discover",
+            upload(post(airzone_setup::discover), 1024, humans),
+        )
+        .route(
+            "/api/integrations/airzone/probe",
+            upload(post(airzone_setup::probe), 2048, humans),
+        )
+        .route(
+            "/api/integrations/airzone",
+            upload(post(airzone_setup::install), 2048, humans).get(airzone_setup::list),
+        )
+        .route(
+            "/api/integrations/airzone/{instance}/probe",
+            upload(post(airzone_setup::probe_update), 2048, humans),
+        )
+        .route(
+            "/api/integrations/airzone/{instance}",
+            upload(put(airzone_setup::update), 2048, humans),
+        )
+        .route(
+            "/api/integrations/airzone/{instance}/withdraw",
+            upload(post(airzone_setup::withdraw), 1024, humans),
+        )
+        .route(
+            "/api/integrations/airzone/{instance}/mode",
+            upload(post(airzone_setup::set_mode), 1024, humans),
+        )
+        .route(
+            "/api/integrations/devices/probe",
+            upload(post(device_setup::probe), 1024, humans),
+        )
+        .route(
+            "/api/integrations/devices",
+            upload(post(device_setup::install), 2048, humans),
+        )
+        .merge(overkiz::routes())
+        .layer(Extension(device_setup::Setup(options.device_setup.clone())))
+        .layer(Extension(airzone_setup::Setup(
+            options.airzone_setup.clone(),
+        )))
+        .layer(Extension(overkiz::Configured(Arc::new(
+            options.overkiz_cloud.clone(),
+        ))))
+}
+
 pub fn router(hub: Hub, shutdown: CancellationToken, options: &Options) -> Router {
+    // The house's data folder, next to home.json.
+    let data_dir = options
+        .home_path
+        .as_deref()
+        .and_then(std::path::Path::parent)
+        .map(std::path::Path::to_path_buf);
     let allowed = guard::AllowedHosts::new(&options.allowed_hosts);
     let (humans, gate, persons) = people(&hub, options);
     // Moli adds people through the same household the screens use.
@@ -330,12 +413,14 @@ pub fn router(hub: Hub, shutdown: CancellationToken, options: &Options) -> Route
     }
     Router::new()
         .route("/api/health", get(rest::health))
+        .merge(integration_routes(&humans, options))
         .merge(device_routes())
         .route("/api/media/{name}", get(rest::media))
         .route("/api/command", post(rest::command))
         .route("/api/ambiances", get(rest::ambiances))
         .route("/api/ambiance", post(rest::ambiance))
         .route("/api/labels/{id}", put(rest::set_label))
+        .route("/api/labels/{id}/points/{key}", put(rest::set_point_label))
         .route("/api/journal", get(rest::journal))
         .route("/api/approvals", get(rest::approvals))
         .route("/api/approvals/{id}", post(rest::decide))
@@ -350,6 +435,7 @@ pub fn router(hub: Hub, shutdown: CancellationToken, options: &Options) -> Route
         .route("/api/system", get(system::system))
         .route("/api/energy", get(rest::energy))
         .route("/api/energy/price", put(rest::set_energy_price))
+        .route("/api/energy/prices", put(rest::set_energy_prices))
         .route("/api/energy/series", get(rest::energy_series))
         .merge(assistant_routes())
         .route(
@@ -376,16 +462,11 @@ pub fn router(hub: Hub, shutdown: CancellationToken, options: &Options) -> Route
         .route("/api/automations/{id}/test", post(automations::test))
         .route("/api/automations/{id}/restore", post(automations::restore))
         .route("/api/events", get(sse::events))
+        .nest_service("/mcp", mcp::service(&hub, options, mcp::Route::Full))
+        // Reads only: what an agent plugged in to look cannot change.
         .nest_service(
-            "/mcp",
-            mcp::service(
-                hub.clone(),
-                options.history.clone(),
-                options.bench_path.clone(),
-                options.energy.clone(),
-                options.automations.clone(),
-                options.demo,
-            ),
+            "/mcp/readonly",
+            mcp::service(&hub, options, mcp::Route::ReadOnly),
         )
         .fallback(assets::serve)
         .layer(Extension(shutdown))
@@ -394,17 +475,13 @@ pub fn router(hub: Hub, shutdown: CancellationToken, options: &Options) -> Route
         .layer(Extension(rest::BenchFile(options.bench_path.clone())))
         .layer(Extension(system::HouseZone(options.timezone.clone())))
         .layer(Extension(rest::HomeFile(options.home_path.clone())))
-        .layer(Extension(plan::PlanDir(
-            options
-                .home_path
-                .as_deref()
-                .and_then(std::path::Path::parent)
-                .map(std::path::Path::to_path_buf),
-        )))
+        .layer(Extension(plan::PlanDir(data_dir.clone())))
         .layer(Extension(rest::Metered(options.energy.clone())))
         .layer(Extension(assistant::Moli(options.assistant.clone())))
         .layer(Extension(automations::Autos(options.automations.clone())))
         .layer(Extension(phones::PhonesGate(options.phones.clone())))
+        .layer(Extension(appli::AppDir(data_dir)))
+        .layer(Extension(Arc::new(appli::Handoffs::default())))
         .layer(Extension(humans))
         .layer(Extension(persons))
         .layer(DefaultBodyLimit::max(BODY))

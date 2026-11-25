@@ -210,6 +210,25 @@ dashboard commande sans code), `via` et `who` (l'e-mail reconnu par Access).
 
 Règles, dans l'ordre :
 
+0. **Code à chaque fois** (`[[guard.code_each_time]]` : `point`, `values` ; aucune valeur =
+   toutes) : cet ordre est retenu **même venant d'une personne avec sa session** (désarmer
+   l'alarme : `point = "alarme:maison/mode"`, `values = ["off"]`). Raison `le code de la
+   maison, à chaque fois` ; la demande porte `code: true`. La valider exige le code dans la
+   décision (`pin`), vérifié à ce moment, avec le même verrouillage que la connexion, et
+   seulement pour une personne en session (sans session : `403`, aucun code essayé) ; sans
+   lui, `401` et la demande reste en attente. La valeur se compare par son sens (`0`, `0.0`
+   et `"0"` sont un même nombre), telle que l'appareil la recevra. Seul un automatisme validé
+   y échappe, et c'est pourquoi **valider ou allumer un automatisme qui porte un tel ordre**
+   (`set` sur une de ces valeurs, `toggle` sur le point) **demande le code** (`pin` dans
+   `/approve` ou `/enabled`, `401` sans lui) ; le tableau de bord sans code ne le lance pas.
+   Les ordres du système (scènes, luminaires, charges pilotées) sont retenus comme les
+   autres ; une scène ou une charge qui viserait un tel ordre est refusée dès la lecture de
+   `moli.toml`.
+0 bis. **Ce que les agents peuvent** (`[[guard.agents_may]]` : `point`, `values`) : un ordre qu'une
+   personne a permis aux agents dans le fichier (armer l'alarme à la voix : `point =
+   "alarme:maison/mode"`, `values = ["home", "night", "away"]`) passe sans personne pour la commande
+   ou l'appareil protégé ; les pièces protégées et les heures calmes valent toujours. Jamais réglable
+   depuis un écran ni l'API.
 1. **Pièce protégée** (`protected_rooms`) : l'appareil, ou un membre s'il s'agit d'un
    groupe, est dans une pièce protégée. Toutes ses pièces comptent : l'étiquette de
    l'utilisateur **et** la pièce native (Hue…). Comparaison insensible à la casse, aux
@@ -269,7 +288,9 @@ Chemin d'une commande (`Hub::command`, `crates/moli-runtime/src/hub.rs`) :
    `state` suivant.
 
 Décision humaine : `POST /api/approvals/{id}` avec `x-moli-origin: ui`, le cookie de
-session, et le corps `{"approve": true|false, "point": "<point affiché sur la carte>"}`.
+session, et le corps `{"approve": true|false, "point": "<point affiché sur la carte>",
+"pin"?: "<code>"}` (`pin` exigé pour une demande `code: true` ; faux : `401`, trop
+d'essais : `429`).
 
 | Contrôle | Échec |
 |---|---|
@@ -304,6 +325,9 @@ Toute écriture est journalisée, réussie ou non (`JournalEntry`, `crates/moli-
 
 - `{"kind":"command","point":"…","value":…}`
 - `{"kind":"label","device":"…","label":{"name":"…","room":"…"}}` (label vide si refus)
+- `{"kind":"visibility","device":"…","hidden":true}` (masquage local réversible)
+- `{"kind":"driver_added","instance":"…","driver_kind":"airzone","read_only":true}` (installation locale d’une passerelle)
+- `{"kind":"driver_configured","instance":"…","driver_kind":"airzone","enabled":false,"read_only":true}` (connexion modifiée ou retrait réversible ; aucune adresse enregistrée dans le journal)
 - `{"kind":"approval","request":<id>,"point":"…","value":…,"decision":"approved|denied|expired"}`
 - `{"kind":"setting","name":"energy.price","from":…?,"to":…}` : un réglage de la maison changé
   par une personne (aujourd'hui le prix du kWh), avec sa valeur d'avant
@@ -334,7 +358,7 @@ Légende « Accès » : **libre** = aucune condition au-delà de la garde `Host`
 | GET | `/api/devices/{id}` | libre ; un invité : ses pièces seulement | `id` = device_id | `DeviceView` | `404` unknown device ; `403` invité, hors de ses pièces |
 | POST | `/api/devices/{id}/live` | comme `/snapshot` (invités refusés ; **humain** dans une pièce protégée) | `{sdp}` : l'offre WebRTC du navigateur (64 Kio au plus) | `{sdp}` : la réponse de l'appareil ; la vidéo va ensuite de l'appareil au navigateur, sans passer par Moli (au réseau de la maison seulement : l'adresse du navigateur vue par Moli est passée à l'appareil) | `400` pas une offre ; `403` ; `404` appareil inconnu / pas de vidéo en direct ; `502` pas de réponse en 10 s ou échec |
 | GET | `/api/devices/{id}/snapshot` | libre ; **humain** si la caméra est dans une pièce protégée | aucune | image brute, `content-type` de la caméra, `cache-control: no-store` | `403` pièce protégée ; `404` appareil inconnu / pas une caméra ; `502` pas d'image en 20 s ou échec |
-| GET | `/api/home` | libre | aucune | contenu de `data/home.json` (disposition du dashboard famille), `{}` si absent | `500` JSON invalide |
+| GET | `/api/home` | libre | aucune | contenu de `data/home.json` (disposition du dashboard famille), `{}` si absent ; chaque pièce avec `outside` (dehors ou non), et en fin de `rooms` les pièces extérieures que seuls les appareils ou le Plan nomment (`"added": true`) | `500` JSON invalide |
 | GET | `/api/system` | libre | aucune | `{version, timezone, stats, drivers, bricks, surfaces, perf, coverage}` (carte du système, § 2.3) | aucune |
 | GET | `/api/bench` | libre | aucune | `data/bench.json` tel quel (comparaison avec Home Assistant, écrite par un script côté hôte, hors de ce dépôt) | `404` no comparison available yet |
 
@@ -344,13 +368,138 @@ Légende « Accès » : **libre** = aucune condition au-delà de la garde `Host`
 |---|---|---|---|---|---|
 | GET | `/api/integrations/tuya-cloud` | libre | aucune | `{instances:[{instance, configured}]}` (jamais les clés) | aucune |
 | PUT | `/api/integrations/tuya-cloud` | **humain** | `{access_id, access_secret, instance?}` (lettres et chiffres) | `{stored, instance}` ; le pilote redémarre avec elles en moins d'une minute | `403` ; `404` pas de pilote tuya ; `422` pas des clés Tuya ; `500` coffre |
+| POST | `/api/integrations/airzone/discover` | **humain**, origine `ui`, invités refusés | `{}`, champs inconnus refusés, 1 Kio maximum | `{gateways:[{host,port,tls_fingerprint,mac,gateway_type,api_version,firmware,systems,zones,incomplete,read_only:true,existing_instance,existing_enabled}],scanned,target_count,incomplete}` | `403` session ; `422` saisie ; `429` recherche en cours ou trop récente ; `503` indisponible |
+| POST | `/api/integrations/airzone/probe` | **humain**, origine `ui`, invités refusés | `{instance,host,port,tls_fingerprint?}` | `{instance,mac,gateway_type,api_version,firmware,systems,zones,incomplete,read_only:true}` | `403` session ; `409` doublon ; `422` saisie ; `429` occupé ; `502` vérification ; `503` indisponible |
+| POST | `/api/integrations/airzone` | **humain**, origine `ui`, invités refusés | même saisie + `expected_mac` issu de la vérification | `{instance,stored:true,read_only,already_installed}` ; nouvel ajout en lecture seule, reprise idempotente avec le mode courant ; sans garantir la disponibilité réseau | mêmes refus ; `409` identité modifiée ; `500` sauvegarde |
+| GET | `/api/integrations/airzone` | **humain**, origine `ui`, invités refusés | — | `{gateways:[{instance,host,port,tls_fingerprint,mac,enabled,source,read_only,running,configuration_lock,temporary_revocation}]}` ; inclut les entrées TOML et les passerelles retirées | `403` session ; `429` occupé ; `503` indisponible |
+| POST | `/api/integrations/airzone/{instance}/probe` | **humain**, origine `ui`, invités refusés | saisie de connexion avec la même `instance` | même aperçu ; exige l’identité matérielle existante | `404` inconnue ; `409` identité modifiée ; `503` identité antérieure inconnue |
+| PUT | `/api/integrations/airzone/{instance}` | **humain**, origine `ui`, invités refusés | saisie de connexion + `expected_mac` issu de la vérification | même résultat que l’ajout ; met à jour ou réactive en lecture seule | mêmes refus, sauvegarde avant activation |
+| POST | `/api/integrations/airzone/{instance}/withdraw` | **humain**, origine `ui`, invités refusés | `{}` | `{instance,stored:bool,enabled:false,read_only}` ; relève arrêtée avant la réponse | `404` inconnue ; `429` occupé ; `503` indisponible ; `stored:false` si le retrait ne peut pas être enregistré |
+| POST | `/api/integrations/airzone/{instance}/mode` | **humain**, origine `ui`, invités refusés ; propriétaire + code frais pour activer | `{read_only:bool,expected_read_only:bool,pin?:string}`, champs inconnus refusés, 1 Kio maximum | `{instance,stored:bool,read_only,running}` ; ancien pilote arrêté avant réponse | `401` code incorrect ; `403` session, propriétaire ou code absent ; `409` mode modifié ailleurs, passerelle en pause ou identité modifiée ; `422` saisie ; `429` occupé ; `500` sauvegarde ; `502` vérification ; `503` indisponible ou identité inconnue |
+| POST | `/api/integrations/devices/probe` | **humain**, origine `ui`, invités refusés | `{host, key?}` : une IPv4 privée écrite telle quelle ; `key` (128 caractères au plus) seulement quand l'appareil l'a demandée ; 1 Kio maximum | `{status}` : `recognized` (avec `profile, name, manufacturer, model, identity, mac?, key` où `key` dit `none`, `empty`, `known` ou `given`, jamais la clé ; `existing_instance`/`existing_device` s'il est déjà dans la maison), `needs_key` (`manufacturer`), `unknown` ou `silent`. Une lecture par profil candidat, aucune écriture | `403` session ; `422` saisie ; `429` une recherche ou un ajout à la fois, six par 10 s ; `502` délai (45 s) |
+| POST | `/api/integrations/devices` | **humain**, origine `ui`, invités refusés | `{host, identity, name, room?, key?}` : l'identité vue à l'aperçu, le nom (60 caractères au plus), la pièce | `{instance, device, labelled}` : l'appareil est redemandé, doit être le même ; clé au coffre (`<instance>/<secret>`), entrée dans `data/devices-added.json`, pilote démarré sans redémarrer Moli, puis nom et pièce posés dès qu'il répond (20 s ; `labelled:false` sinon). Journal : `driver_added` | `409` `identity_changed` ou `duplicate_device` (`existing_instance`) ; `422` saisie, `needs_key`, `not_recognized` ; `429` `busy` (une recherche en cours) ; `502` `silent`, ou `probe_failed` si le pilote ne démarre pas (rien ne reste, clé retirée, `driver_added` en erreur au journal) ; `500` `persistence_failed` (rien d'ajouté, clé retirée) |
 | GET | `/api/ambiances` | libre | aucune | `[{id, name, icon, colors:["#rrggbb"], white (K), brightness (%), effect?}]` (`crates/moli-ambiance`) | aucune |
 | POST | `/api/ambiance` | libre ; chaque ordre passe par la garde comme `/api/command` | `{lights:[id…] (1 → 32, un groupe vaut ses membres), ambiance? \| color? ("#rrggbb") \| white? (1500 → 10000 K), actor?}` | `{done:[id], held:[{device, point, approval, reason}], failed:[{device, error}], skipped:[id]}` | `400` ; `404` ambiance inconnue |
 | POST | `/api/command` | libre ; origine via `x-moli-origin` (§ 1.3) | `{point, value, actor?}` | `200 {ok:true}` ; **`202 {ok:false, pending:<id>, reason}`** si retenu | `404` point inconnu ; `403` point en lecture seule ; `422` valeur invalide ; `503` pilote indisponible / file pleine ; `504` pas de réponse en 5 s ; `502` erreur du pilote |
-| PUT | `/api/labels/{id}` | libre ; changer la pièce d'un appareil gardé exige `ui` | `{name?, room?}` : absent = inchangé, `""` = effacé | `Label` `{name?, room?}` | `404` unknown device ; `403` changement de pièce gardé ; `500` écriture de `labels.toml` |
+| PUT | `/api/labels/{id}` | libre ; changer la pièce d'un appareil gardé exige `ui` | `{name?, room?}` : absent = inchangé, `""` = effacé | `Label` `{name?, room?, points?}` | `404` unknown device ; `403` changement de pièce gardé ; `500` écriture de `labels.toml` |
+| PUT | `/api/labels/{id}/points/{key}` | libre ; un agent nomme un point sans nom, jamais ne le renomme (un nom donné par `home.json` `outlets` compte ; jugé sous le verrou d'écriture) | `{name}` : le nom du point (la prise d'une multiprise), `""` = oublié ; nettoyé et borné comme un nom d'appareil | `Label`, ses noms de points dans `points` `{clé: nom}` | `404` unknown device / unknown point ; `403` renommage par un agent ; `500` écriture de `labels.toml` |
+| PUT | `/api/devices/{id}/visibility` | session humaine + origine `ui`, invités refusés | `{hidden:bool}`, champs inconnus refusés, 1 KiB maximum | `{hidden:bool}` | `403` non-humain ; `404` appareil inconnu ; `422` identifiant invalide ; `503` layout non configuré ; `500` sauvegarde impossible |
 | GET | `/api/journal` | libre | `?limit=` (défaut 100) | `[JournalEntry]`, plus récent d'abord (500 au plus en mémoire) | `400` requête invalide |
 | GET | `/api/approvals` | libre ; un invité : ses pièces seulement | aucune | `[ApprovalRequest]`, plus ancien d'abord | aucune |
 | POST | `/api/approvals/{id}` | **humain** + `x-moli-origin: ui` | `{approve: bool, point}` | `{ok:true}` | `403` ; `409` mauvais point ; `410` inconnue / expirée ; erreurs de commande si l'ordre approuvé échoue ; `400` id non numérique |
+
+La gestion Airzone conserve le fichier TOML. Le registre borné `airzone-gateways.json`
+lit les versions 1 et 2 et écrit la version 3 : connexions gérées, surcharges ciblées des
+entrées TOML et retraits réversibles. Une modification conserve les options natives
+non concernées (`poll_secs`, `dhw_units`), mais un ajout, une édition ou une réactivation impose `read_only=true`. Une entrée
+TOML jamais modifiée conserve son mode d’origine. Les restrictions explicites
+`enabled = false` et `read_only = true` du TOML restent prioritaires sur le registre
+et sur les changements demandés dans Moli. Le champ `configuration_lock` de la
+liste vaut `disabled`, `read_only` ou `null` ; il explique ce verrou dans
+l’interface. Un bloc désactivé aux options incomplètes ou inconnues est ignoré.
+`running` désigne la présence du
+superviseur, pas la disponibilité réseau de la passerelle.
+
+Le changement de mode ne prend aucune adresse réseau en entrée : il utilise la
+connexion déjà enregistrée. `expected_read_only` doit correspondre au mode actuel,
+sinon `mode_conflict` impose de relire la liste. L'autorisation de pilotage exige un propriétaire et le code Moli (`pin`) dans
+la même requête : une session de navigateur seule ne suffit pas. Les tentatives
+partagent le verrouillage de connexion ; le code n’est ni conservé ni journalisé.
+La révocation exige seulement la session humaine et l’origine `ui`.
+L’autorisation vérifie aussi l'identité connue par une lecture avant de persister le choix ; elle est refusée
+pour une passerelle en pause. La révocation reste possible hors ligne ou en pause,
+sans vérification réseau, et conserve l'état activé/désactivé. L’autorisation de pilotage
+persiste le choix avant de remplacer le pilote. La révocation et le retrait arrêtent
+l’ancien superviseur et refusent ses commandes en attente avant la réponse, même
+si l’écriture échoue. Le pilote est alors relancé uniquement en lecture seule si
+la connexion reste active. La réponse `stored:false` et le champ de liste
+`temporary_revocation:true` signalent une révocation effective en mémoire, dont le
+maintien après redémarrage n’est pas garanti. Les nouvelles autorisations et les
+éditions de cette passerelle sont bloquées jusqu’à l’enregistrement explicite de
+la révocation. Un retrait temporaire reste prioritaire sur une révocation simple.
+Ces opérations sont journalisées comme `driver_configured` et n’envoient aucune
+commande physique ; le registre illisible ou modifié n’est jamais écrasé.
+
+Le mode autorisé est conservé après redémarrage. Les anciennes entrées v1/v2
+marquées `read_only=false` restent invalides : la migration ne les transforme
+jamais en autorisation. Les commandes deviennent accessibles par les chemins
+habituels de Moli, avec leurs gardes et autorisations existantes. Le retour en
+lecture seule bloque les commandes suivantes ; il n'arrête pas le chauffage et
+n'annule pas une commande déjà exécutée.
+
+
+La saisie de connexion accepte uniquement une IPv4 privée en production : les
+noms DNS, les IP publiques et la boucle locale sont refusés. L’exception de boucle
+locale n’existe que dans les binaires de tests unitaires pour leurs faux contrôleurs.
+Toutes les routes Airzone POST/PUT partagent le budget de six requêtes par client
+sur dix secondes, y compris la vérification et la modification d’une passerelle
+existante ; le dépassement renvoie `429` avant tout appel réseau. La liste GET reste
+hors de ce budget.
+
+La découverte est une lecture à la demande, sans ajout automatique, écriture de
+configuration, tâche périodique ni commande d’équipement. Ses indices viennent des
+passerelles enregistrées, des IPv4 privées des pilotes configurés, de leurs adresses
+apprises encore rattachées à la même configuration et de la table locale des voisins.
+Elle explore au plus deux `/24` privés et 512 couples adresse/port ; les adresses
+publiques, de boucle locale, de réseau et de broadcast sont exclues. Aucun nom DNS
+ni sous-réseau fourni par le navigateur n’est accepté. Elle essaie le port 3000,
+en préservant les ports et empreintes HTTPS des connexions déjà connues, sans repli
+HTTP pour ces dernières. Un autre port ou une empreinte inconnue nécessite la
+saisie manuelle. Les installations déjà présentes, actives ou retirées, sont
+identifiées par MAC sans être réenregistrées ; l’identité est revérifiée au moment
+de l’ajout explicite.
+
+Une seule recherche à la fois et au plus une toutes les 30 secondes, partagées par
+tous les clients de l’instance. La préconnexion TCP dispose de 250 ms, avec au plus
+16 connexions concurrentes ; les validations natives sont limitées à quatre en
+parallèle et 32 au total, sous une échéance globale de 18 secondes. La validation
+réutilise exclusivement les lectures natives bornées d’identité et d’inventaire.
+Abandonner la future ou arrêter Moli annule les connexions et validations restantes.
+`scanned` compte les cibles traitées, pas les passerelles trouvées. `incomplete`
+signale une borne atteinte, l’expiration ou un réseau insuffisamment identifié.
+Une recherche vide ne prouve donc pas l’absence de matériel : Docker, les VLAN et
+un premier démarrage sans indice peuvent masquer le LAN réel. Le parcours manuel
+reste disponible. Le scan ne modifie aucune identité ni aucun état d’appareil.
+
+Le registre accepte au plus 32 connexions gérées et surcharges au total, retraits
+compris, et 64 Kio. Les entrées TOML retirées restent représentées par une surcharge
+`enabled=false` : cette trace empêche leur redémarrage au prochain lancement.
+Au démarrage, une entrée mal formée, en doublon ou dont le pilote TOML a été
+supprimé est signalée dans les journaux puis ignorée. Les entrées valides et les
+autres pilotes de la maison continuent de fonctionner. Une surcharge invalide
+identifiable laisse son pilote Airzone en pause ; une surcharge sans instance
+identifiable met tous les pilotes Airzone en pause. Si le registre entier est
+illisible, dépasse les bornes ou utilise une version inconnue, tous les pilotes
+Airzone restent en pause, car les retraits précédents ne sont plus vérifiables.
+Le fichier original reste intact, y compris les données ignorées. Tant qu'une
+anomalie existe, les ajouts, modifications et retraits gérés échouent avec
+`persistence_failed`, avant toute vérification réseau ou activation. Sauvegarder
+le fichier puis le corriger, ou restaurer une sauvegarde cohérente, et redémarrer
+Moli pour retrouver ces opérations. La commande de restauration reste utilisable.
+
+La première opération persistée migre le registre vers la version 2. Pour revenir
+à un ancien binaire qui ne lit que la version 1, restaurer la sauvegarde cohérente
+du registre et de la configuration prise avant cette migration. Changer seulement
+le numéro de version ou effacer les traces de retrait ne constitue pas un retour
+arrière et pourrait relancer une passerelle retirée.
+
+Les identifiants d’instances TOML existants sont conservés à l’identique, y compris
+les majuscules, points, espaces ou caractères Unicode autorisés par la configuration.
+Les routes utilisent leur encodage URL ; le corps doit porter exactement le même
+identifiant. Seuls les identifiants littéraux `.` et `..` ne peuvent pas être modifiés
+depuis le navigateur, qui normalise ces segments de chemin : ils restent listés et
+l’interface explique le refus sans les renommer ni envoyer de requête vers une
+autre instance. Les nouveaux identifiants suivent la syntaxe `[a-z][a-z0-9_-]{0,31}`.
+
+Un changement d’adresse conserve l’instance et exige la même MAC. Un remplacement
+matériel passe par le retrait explicite de l’ancienne passerelle puis l’ajout sous
+une nouvelle instance ; aucun historique, nom ou automatisme n’est transplanté.
+Retirer n’efface ni les historiques ni les étiquettes : les fiches connues restent
+hors ligne durant la session et leur cache est dormant après redémarrage, jusqu’à
+réactivation. Le superviseur est annulé, ses commandes vidées, puis sa tâche attendue
+avant désinscription ou redémarrage. Les opérations persistées continuent même si
+le client HTTP se déconnecte ; rejouer exactement une opération réussie ne crée
+ni second superviseur ni seconde entrée de journal.
 
 **Session humaine**
 
@@ -364,9 +513,10 @@ Légende « Accès » : **libre** = aucune condition au-delà de la garde `Host`
 
 | Méthode | Chemin | Accès | Entrée | Réponse | Erreurs |
 |---|---|---|---|---|---|
-| GET | `/api/history` | libre ; un invité : les points de ses pièces | `?point=` (obligatoire), `hours` (défaut 24, borné 1 min → 366 j), `points` (défaut 300, borné 10 → 2 000) | `Series` (§ 2.3) | `404` history is disabled ; `400` requête ; `403` invité, hors de ses pièces ; `500` |
+| GET | `/api/history` | libre ; un invité : les points de ses pièces | `?point=` (obligatoire), `hours` (défaut 24, borné 1 min → 20 ans : les points gardés à vie se lisent heure par heure au-delà des semaines de changements), `points` (défaut 300, borné 10 → 2 000) | `Series` (§ 2.3) | `404` history is disabled ; `400` requête ; `403` invité, hors de ses pièces ; `500` |
 | GET | `/api/energy` | libre | aucune | `Summary` : puissance instantanée, aujourd'hui, hier, mois, projection, mois dernier, par compteur | `404` no [energy] meters configured ; `500` |
 | PUT | `/api/energy/price` | personne (code) ou propriétaire | `{price}` : le prix d'un kWh de la maison, dans la devise (`0.2319`) | `{price, before?, prices:[{since, price}]}` ; compte à partir de maintenant, journalisé (`setting`) | `403` sans code ; `404` sans `[energy]` ; `422` prix invalide (≤ 0, ou > 5 : un prix en centimes) |
+| PUT | `/api/energy/prices` | personne (code) ou propriétaire | `{prices:[{since, price}]}` : toute la liste des prix de la maison, chacun à partir de `since` (ms UTC) ; vide = plus de prix | `{prices, repriced}` (liste triée, nombre d'heures recalculées) ; les heures déjà comptées à partir du premier changement prennent les nouveaux prix (compteurs sans `price` ni `price_point`, maison sans `[energy.tariff]`), journalisé (`setting` `energy.prices`) | `403` sans code ; `404` sans `[energy]` ; `422` prix invalide, deux prix au même instant, plus de 200 prix |
 | GET | `/api/energy/series` | libre | `?step=hour\|day\|month` (obligatoire), `count` (défaut 24 / 30 / 12 ; borné 1 → 8 784 / 3 660 / 600) | `Report` `{step, from, to, currency, timezone, meters, buckets:[{start, meters:{<id>:{kwh, cost?}}}]}` | `400` pas invalide ; `404` ; `500` |
 | GET | `/api/weather/forecast` | libre | aucune | Prévisions Open-Meteo (gardées 15 min) : `{timezone, utc_offset_seconds, hourly:{time, temperature_2m, weather_code, precipitation_probability, precipitation, cloud_cover, wind_speed_10m, is_day}, daily:{time, weather_code, temperature_2m_max/min, precipitation_sum, precipitation_probability_max, wind_speed_10m_max, sunrise, sunset}}` : 25 heures, 7 jours | `404` maison sans position ; `502` |
 | GET | `/api/weather/map` | libre | aucune | Carte météo, 400 × 300 km autour de la maison (centre arrondi au dixième de degré) : `{area:{south, west, north, east}, house:[x, y] (0..1), km:[400, 300], weather:{grid:[12, 9], hours, utc_offset_seconds, u, v, cloud, rain}, land:{z, x0, y0, x1, y1}\|null}`. Vent (km/h, est/nord), nuages (%), pluie (mm) en tableaux plats `[heure × points + point]` sur 24 h (Open-Meteo, une requête, gardée 1 h) ; `land` = tuiles d'altitude à lire (null tant qu'elles ne sont pas là) | `404` maison sans position ; `502` |
@@ -429,9 +579,12 @@ Limites de `Turn` : 14 derniers messages renvoyés au modèle, 2 000 caractères
 | Méthode | Route | Accès | Détail |
 |---|---|---|---|
 | GET | `/api/plan` | libre | `{ skin?, floors: [...] }`. Étage **image** : `{ id, name, image, devices: [{ id, x, y }] }`, coordonnées 0–1 sur l'image. Étage **dessiné** : `{ id, name, size: [l, h], elevation?, offset?: [x, y], height?, roof?: { ridge: "x"|"y", rise }, walls: [{ x, y, w, h, r?, height? }], rooms: [{ id, name, kind, room?, poly: [[x, y]…] }], openings: [{ kind, x, y, w, h }], items: [{ kind, x, y, w, h, r?, height?, label? }], devices: [{ id, x, y }] }`, tout en **cm** (`room` = la pièce Moli, pour le halo des lumières et « poser par pièce » ; `height` d'étage = ses murs en 3D, 250 par défaut ; `height` d'un mur ou d'un élément = sa hauteur (muret, garde-corps) ; `r` = rotation en degrés autour du centre, un mur peut être de biais ; `roof` = toit à deux pans au-dessus des murs de l'étage, faîtage le long de x ou y, `rise` cm au-dessus des égouts : regarder cet étage en 3D montre la maison de dehors ; un élément a son dos (tête de lit, dossier, écran) sur son bord haut) |
-| PUT | `/api/plan` | **session humaine** | même forme ; 8 étages, 400 appareils, 400 murs/ouvertures/éléments, 100 pièces (3 à 64 points) par étage au plus ; tout dans l'étage (100 cm de marge), 100 m de côté au plus ; types connus (`skin` : plan, blueprint, nuit, aquarelle ; `kind` de pièce, d'ouverture, d'élément : listes de `plan.rs`) ; ids `[a-z0-9-]`, noms ≤ 60 ; image connue ; écriture atomique (nom temporaire unique) de `data/plan.json` |
+| PUT | `/api/plan` | **session humaine** | même forme ; 8 étages, 400 appareils, 400 murs/ouvertures/éléments, 100 pièces (3 à 64 points) par étage au plus ; tout dans l'étage (100 cm de marge), 100 m de côté au plus ; types connus (`skin` : plan, blueprint, nuit, aquarelle, reel ; `kind` de pièce, d'ouverture, d'élément : listes de `plan.rs`) ; couleurs `#rrggbb` seulement (`facade` et `trim` d'un étage, `color` et `accent` d'un mur, d'une ouverture ou d'un élément) ; `finish` d'une pièce : `floor` (tile, wood, wood_dark, concrete, stone, carpet, grass, deck, gravel), `tint`, `paint`, `raise` (cm), `accents` (16 au plus : `edge` = côté du contour, `color`, `from`/`to` en cm, `pattern` leaves ou stripes) ; ids `[a-z0-9-]`, noms ≤ 60 ; image connue ; écriture atomique (nom temporaire unique) de `data/plan.json` |
 | POST | `/api/mobile/register` | **une personne** : une session avec le code, ou quelqu'un que Moli connaît (Cloudflare Access, mot de passe), ou la machine elle-même ; jamais un invité. Sinon `403` (« entrer le code d'abord ») | appairage d'un téléphone (`{ name, platform: ios|android, model, push_token? }`) → `{ id, token, home }` ; le jeton n'est montré qu'ici, Moli n'en garde que le SHA-256 (`data/phones.json`) ; 20 téléphones au plus. La maison reçoit un avis à chaque appairage (le nom du téléphone, son id, et qui l'a appairé : la personne, l'e-mail Access ou l'adresse) |
 | POST | `/api/phones/{id}/report` | **jeton du téléphone** (`Authorization: Bearer`) ; seule route joignable sans réseau de la maison ni Access (`Via::Phone`, application Access « bypass » sur `/api/phones`) | `{ battery?, charging?, latitude?, longitude?, accuracy?, wifi?, app?, reason?, push_token? }` bornés → `{ home }` (la maison, apprise sur son Wi-Fi) ; 401 = jeton refusé, l'appli se réappaire ; 403 = sa personne n'est plus de la maison (retirée, séjour d'invité terminé), qui ne lui envoie plus de notification non plus. Retirer une personne oublie ses téléphones |
+| GET | `/api/phones/{id}/app`, `/api/phones/{id}/app.apk` | **jeton du téléphone** (`Via::Phone`, comme `report`) | la mise à jour de l'appli Android que la maison garde (`data/app/android.json` et `data/app/moli.apk`, déposés par `mobile/publish-android.sh`) : `{ version_code, version_name, size, sha256 }` puis le fichier ; 404 sans version déposée. L'appli propose la mise à jour (téléphone) ou l'installe quand l'écran dort (tablette murale dont Moli est propriétaire) |
+| GET | `/api/mobile/handoff?challenge=…&back=moli://handoff` | **une personne que Cloudflare Access vient de connecter** (jamais un invité) | fin de la connexion Google faite dans un onglet du navigateur de l'appli (Google refuse les vues web) : le jeton Access est gardé 2 min sous un code à usage unique, l'onglet revient à l'appli (`back` : un schéma d'appli, jamais une adresse web) |
+| POST | `/api/phones/handoff` | **public** : le code et le secret dont le `challenge` est le SHA-256 (PKCE, RFC 7636) sont la preuve | `{ code, verifier }` → `{ token, expires }` (une fois, dans les 2 min) ; l'appli le pose comme cookie `CF_Authorization` de sa vue web |
 | DELETE | `/api/phones/{id}` | **session humaine** | oublie un téléphone (perdu, vendu) : son jeton cesse de marcher |
 | POST | `/api/plan/images` | **session humaine** | corps = l'image (PNG, JPEG, WebP, SVG ; 8 Mo au plus) ; réponse `{ image: "<16 hex>.<ext>" }` (nom tiré du contenu) |
 | GET | `/api/plan/images/{name}` | libre | l'image, `immutable`, avec une CSP `sandbox` (un SVG ouvert seul ne peut rien exécuter) |
@@ -462,11 +615,17 @@ Notifier un téléphone : `POST /api/command` sur `telephones:<id>/push` (texte 
 - `kind` : `{"type":"binary"}`, `{"type":"numeric","min"?,"max"?,"step"?}`,
   `{"type":"enum","values":[…]}`, `{"type":"text"}`.
 - `unit` : symbole (`W`, `kWh`, `Wh`, `VA`, `V`, `mV`, `A`, `°C`, `%`, `lx`, `hPa`, `dB`,
-  `ppm`, `s`, `min`, `h`, ou tout autre texte).
+  `ppm`, `s`, `min`, `h`, `km/h`, `mm`, `mm/h`, `°`, ou tout autre texte).
 - `semantic` : `on_off`, `brightness`, `color_temp`, `color`, `power`, `apparent_power`,
   `energy`, `voltage`, `current`, `temperature`, `humidity`, `pressure`, `illuminance`,
   `battery`, `battery_low`, `signal_strength`, `contact`, `position`, `occupancy`, `water_leak`,
-  `smoke`, `tamper`, `config`, `alert` (binaire, `true` = quelque chose ne va pas), `other`.
+  `soil_moisture` (humidité du sol, %), `soil_dry` (binaire, `true` = la plante a soif ; jamais
+  une alerte de sécurité), `smoke`, `tamper`, `config`, `alert` (binaire, `true` = quelque chose
+  ne va pas), `press` (en lecture seule : un appui de bouton, un événement et non un état ; la
+  valeur est le genre d'appui tel que la marque le donne, `single`, `double`, `short_release`… ;
+  jamais déduit d'un nom), la météo avec une seule unité chacun : `wind_speed` et `wind_gust` (km/h),
+  `wind_direction` (°, d'où vient le vent, 0 = nord), `rain_rate` (mm/h), `rain_today` (mm,
+  remis à zéro chaque jour par la source), `uv_index` (sans unité), et `other`.
 - `value` : scalaire JSON (`true`, `42`, `21.5`, `"auto"`, `null`). Binaire → booléen,
   numérique → nombre, énumération → texte exact.
 
@@ -625,9 +784,12 @@ rend sa place.
 | `device_upserted` | `device` : l'appareil (`id`, `instance`, `native_name`, `manufacturer?`, `model?`, `description?`, `native_room?`, `members?`, `points`) | appareil publié ou redéfini par son pilote |
 | `device_removed` | `device` : device_id | appareil retiré |
 | `state` | `point`, `value`, `ts`, `pulse?` | nouvelle valeur (seulement si elle change, sauf points « impulsion » type bouton, diffusés à chaque occurrence, alors avec `pulse: true`) ; aussi à la restauration du cache |
+| `seen` | `point`, `ts` | la même valeur, relue (#230) : seule l'heure du relevé avance. Au plus une fois toutes les 5 minutes par point ; rien n'est écrit dans l'historique et aucun automatisme ne part. Le tableau de bord met à jour l'âge affiché ; un client qui ne le connaît pas l'ignore |
 | `availability` | `device`, `online` (booléen) | joignable / injoignable |
 | `driver_status` | `instance`, `status` (`DriverStatus`, § 2.2) | état d'un pilote |
+| `driver_registered` | `instance`, `kind`, `integration` | pilote enregistré ; les surfaces connaissent son type avant les premiers relevés |
 | `label_changed` | `device`, `label` `{name?, room?}` | étiquette modifiée (label complet après fusion) |
+| `layout_changed` | aucun | disposition modifiée : recharger `/api/home` ; aussi à recharger après une reconnexion/snapshot |
 | `journal` | `entry` : `JournalEntry` (§ 1.6) | toute écriture journalisée |
 | `approval_requested` | `request` : `ApprovalRequest` (`id`, `ts`, `expires`, `point`, `value`, `origin`, `actor?`, `reason`, `device_name`, `native_name`, `rooms`) | un ordre attend un humain |
 | `approval_resolved` | `id`, `decision` : `approved` \| `denied` \| `expired` | décision ou expiration |
@@ -661,8 +823,20 @@ Canal de 256 messages ; un abonné en retard **perd silencieusement** les messag
 
 ### 4.1 Point d'entrée
 
-`http://<hôte>:8790/mcp`, transport « streamable HTTP » (`rmcp` 3.5,
-`crates/moli-api/src/mcp.rs`) :
+`http://<hôte>:8790/mcp`, transport « streamable HTTP » (`rmcp` 3.9,
+`crates/moli-api/src/mcp.rs`). Deux routes, un même serveur :
+
+- **`/mcp`** : les 14 outils (moins ceux que la maison coupe, voir plus bas).
+- **`/mcp/readonly`** : les 11 lectures seulement. `send_command`, `set_label` et
+  `save_automation_draft` n'y sont **ni listés ni appelables** : le serveur répond
+  `tool not found` (erreur JSON-RPC), quoi que fasse le client. Pour un agent branché pour
+  regarder. Mêmes gardes que `/mcp` (foyer, pas de distant, limiteur `mcp`).
+- **Outils coupés par la maison** : `[mcp] disabled_tools = ["camera_snapshot"]` dans
+  `moli.toml`, réglable par des humains seulement (comme `[guard]`). Un outil coupé
+  disparaît des **deux** routes : absent de `tools/list`, `tool not found` à l'appel. Un
+  nom inconnu empêche Moli de démarrer (une faute de frappe ne coupe rien en silence).
+
+Le service :
 
 - `StreamableHttpService` avec `LocalSessionManager` (sessions en mémoire),
   `json_response(true)` : les réponses arrivent en `application/json` plutôt qu'en flux ;
@@ -685,7 +859,15 @@ est un résultat `isError: true` avec un message texte (pas une erreur JSON-RPC)
 exception : `camera_snapshot` renvoie un bloc image (base64 + type MIME).
 
 Brancher un client : `claude mcp add --transport http moli http://<hôte>:8790/mcp`
-(Claude Code), ou l'équivalent « serveur MCP HTTP » de tout autre agent.
+(Claude Code), ou l'équivalent « serveur MCP HTTP » de tout autre agent ; `…/mcp/readonly`
+pour un agent qui ne doit que lire.
+
+**Annotations** (MCP `ToolAnnotations`, dans `tools/list`) : `readOnlyHint: true` sur les
+11 lectures ; `readOnlyHint: false, destructiveHint: false` sur `set_label` et
+`save_automation_draft` (un nom se remet, un brouillon n'agit pas) ; `readOnlyHint: false,
+destructiveHint: true, openWorldHint: true` sur `send_command` (il agit sur le monde
+physique). Elles aident le client à décider quand demander confirmation ; **elles ne
+gardent rien** : la garde est côté serveur (route, outils coupés, § 1.4 et 1.5).
 
 ### 4.2 Les 14 outils
 
@@ -693,12 +875,12 @@ Brancher un client : `claude mcp add --transport http moli http://<hôte>:8790/m
 |---|---|---|---|
 | `system_status` | aucun | `{stats, drivers, guard, pending_approvals, comparison_with_home_assistant:{coverage, ha_memory_bytes, moli_memory_bytes, measured_at}\|null}` | dit d'avance à l'agent où et quand il lui faudra un humain |
 | `list_devices` | `room?` (insensible à la casse ; pièce de l'étiquette, sinon native), `search?` (sous-chaîne de l'id, du nom natif, du nom d'étiquette ou du modèle) | `{count, devices:[{id, name, room, model, description, online, points:[{key, value, unit?, writable?}]}]}` | `writable: true` seulement sur les points inscriptibles |
-| `get_device` | `device` (device_id) | `DeviceView` complet (spécifications, bornes, valeurs permises, état) | `unknown device` |
-| `camera_snapshot` | `device` | bloc image (base64, type MIME de la caméra) | **refusé** pour une pièce protégée : `protected room « … »: images are for humans in the dashboard only` ; délai 20 s |
+| `get_device` | `device_id` (`device` accepté) | `DeviceView` complet (spécifications, bornes, valeurs permises, état) | `unknown device` |
+| `camera_snapshot` | `device_id` (`device` accepté) | bloc image (base64, type MIME de la caméra) | `unknown device` ; **refusé** pour une pièce protégée : `protected room « … »: images are for humans in the dashboard only` ; délai 20 s |
 | `send_command` | `point`, `value` (booléen, nombre ou texte d'énumération ; objet/tableau → texte JSON), `actor?` (nom de l'agent, journalisé) | `{ok:true, point}` ; retenu : `{ok:false, status:"awaiting_human_approval", request:<id>, reason, message:"Not executed. A human must approve this request from the Moli OS dashboard (it expires in 10 minutes). Do not retry; tell the user."}` | l'ordre retenu n'est **pas** une erreur : l'agent doit relayer, pas réessayer. Erreurs : `unknown point`, `point is read-only`, `invalid value: …`, `driver …` |
-| `set_label` | `device`, `name?`, `room?` (`""` efface), `actor?` | `{ok:true, device, label}` | changer la pièce d'un appareil gardé est refusé (`seul un humain peut changer la pièce de cet appareil (…)`) |
+| `set_label` | `device_id` (`device` accepté), `name?`, `room?` (`""` efface), `actor?` | `{ok:true, device, label}` | changer la pièce d'un appareil gardé est refusé (`seul un humain peut changer la pièce de cet appareil (…)`) |
 | `get_journal` | `limit?` (défaut 20) | `[JournalEntry]`, plus récent d'abord | |
-| `history` | `point`, `hours?` (défaut 24, borné 1 min → 366 j) | `{point, from, to, changes, value_before_window, stats:{min, max, avg}\|null, first, last, series (≤ 60 points, brut ou seaux), truncated}` | moyenne pondérée (seaux pesés par leur nombre d'échantillons, valeur d'avant la fenêtre incluse) ; `history is disabled on this instance` |
+| `history` | `point`, `hours?` (défaut 24, borné 1 min → 20 ans) | `{point, from, to, changes, value_before_window, stats:{min, max, avg}\|null, first, last, series (≤ 60 points, brut ou seaux), truncated}` | moyenne pondérée (seaux pesés par leur nombre d'échantillons, valeur d'avant la fenêtre incluse) ; `history is disabled on this instance` |
 | `energy` | `step?` (`hour`/`day`/`month`), `count?` (défaut 24 / 30 / 12) | sans `step` : `Summary` ; avec : `Report` | jours et mois en heure locale ; `no energy meters are configured on this instance` |
 | `history_sql` | `sql` : **une** requête SQLite en lecture seule | `{columns, rows, truncated}` | voir 4.3 |
 | `list_automations` | aucun | `{automations:[{id, name, summary, enabled, approved, live, author}]}` | `live` = allumé **et** validé par une personne |
@@ -765,7 +947,7 @@ La configuration est chargée et validée pour toutes les commandes **sauf** `pr
 | `profile check <profile>` | fichier de profil ou id intégré | valide un profil déclaratif et affiche variables, requêtes et points (la porte que tout profil écrit par un agent doit passer) ; sans configuration |
 | `profile list` | aucun | liste les profils intégrés ; sans configuration |
 | `energy import` | aucun | importe un historique horaire depuis l'entrée standard (lignes JSON `{"meter", "hour" (ms, début d'heure UTC), "kwh"}`) ; seules les heures antérieures à l'enregistrement de Moli sont prises ; rejouable, possible pendant que `serve` tourne ; exige `[energy]` |
-| `tuya import` | `--instance <id>` (défaut `tuya`), `--devices-file <chemin>` (défaut `data/tuya.json`) | lit l'export JSON de `tools/home-assistant/tuya-export.py` sur l'entrée standard (refuse un terminal) : clés locales dans le coffre chiffré, le reste dans le fichier d'appareils ; redémarrer ensuite |
+| `tuya import` | `--instance <id>` (défaut `tuya`), `--devices-file <chemin>` (défaut : le `devices_file` du pilote, sinon `tuya.json` du dossier de données), `--cloud`, `--summary` | lit l'export JSON de `tools/home-assistant/tuya-export.py` sur l'entrée standard (refuse un terminal), ou avec `--cloud` le cloud Tuya lui-même, avec les clés du projet cloud du pilote (son fichier `cloud_keys`, sinon celles données dans le tableau de bord) et sa `cloud_region` : clés locales dans le coffre chiffré, le reste dans le fichier d'appareils ; `--summary` liste seulement, sans clé ni écriture ; redémarrer ensuite |
 
 **Les secrets passent toujours par un tube, jamais par la ligne de commande ni le
 clavier** (sinon ils restent à l'écran, dans l'historique du shell ou la liste des
@@ -869,14 +1051,3 @@ Restent ouverts (non urgents) :
 - le commentaire de `crates/moli-api/src/lib.rs` ne liste ni `/api/system`, ni
   `/api/home`, `/api/bench`, `/api/history`, `/api/devices/{id}/snapshot` ; la plupart des
   handlers de `rest.rs` et `automations.rs` n'ont pas de commentaire de documentation.
-
-## Visibilité locale des appareils
-
-| Méthode | Chemin | Accès | Entrée | Réponse | Erreurs |
-|---|---|---|---|---|---|
-| PUT | `/api/devices/{id}/visibility` | session humaine + origine `ui`, invités refusés | `{hidden:bool}`, champs inconnus refusés, 1 KiB maximum | `{hidden:bool}` | `403` non-humain ; `404` appareil inconnu ; `422` identifiant invalide ; `503` layout non configuré ; `500` sauvegarde impossible |
-
-Une session humaine du dashboard peut masquer ou restaurer un appareil dans Moli.
-La modification persiste dans `home.json`, ne commande pas l’appareil et ne retire
-ni sa définition ni son historique. Un succès diffuse `layout_changed` pour que
-les autres vues rechargent leur disposition, et journalise une action `visibility`.

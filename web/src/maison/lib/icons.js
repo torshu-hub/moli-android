@@ -8,6 +8,10 @@ import {
   mdiLamp,
   mdiSpotlightBeam,
   mdiPowerSocketEu,
+  mdiToggleSwitchOutline,
+  mdiFormatListBulletedSquare,
+  mdiNumeric,
+  mdiFormTextbox,
   mdiWallSconceFlat,
   mdiLedStripVariant,
   mdiPalmTree,
@@ -87,16 +91,19 @@ import {
   mdiFire,
   mdiFlash,
   mdiFlowerOutline,
+  mdiGarage,
   mdiGate,
   mdiHomeOutline,
   mdiHomeRoof,
   mdiInformationOutline,
   mdiKeyboardOutline,
   mdiLeaf,
+  mdiSprout,
   mdiLightbulbGroupOutline,
   mdiLightbulbOutline,
   mdiLightningBolt,
   mdiLock,
+  mdiFingerprint,
   mdiMicrophoneOutline,
   mdiAccountVoice,
   mdiPhoneHangup,
@@ -125,6 +132,7 @@ import {
   mdiThermometer,
   mdiToilet,
   mdiTune,
+  mdiPencilOutline,
   mdiUndoVariant,
   mdiVolumeHigh,
   mdiVolumeMinus,
@@ -148,6 +156,12 @@ import {
   mdiWindowShutter,
   mdiBatteryAlert,
   mdiBattery,
+  mdiTransmissionTower,
+  mdiDownload,
+  mdiTrendingUp,
+  mdiTrendingDown,
+  mdiTabletDashboard,
+  mdiLockOpenVariantOutline,
   mdiMoleculeCo,
   mdiBattery50,
   mdiBattery20,
@@ -155,6 +169,8 @@ import {
   mdiSmokeDetectorVariant,
   mdiWalk,
   mdiWaterAlert,
+  mdiWindowShutterOpen,
+  mdiWindowShutterAlert,
 } from '@mdi/js';
 
 /** Names used by the layout (home.json) and the pages. */
@@ -165,6 +181,11 @@ export const icons = {
   lamp: mdiLamp,
   spotlight: mdiSpotlightBeam,
   socket: mdiPowerSocketEu,
+  // Helpers, one per kind: a switch, a choice, a number, a text.
+  toggle: mdiToggleSwitchOutline,
+  'helper-select': mdiFormatListBulletedSquare,
+  'helper-number': mdiNumeric,
+  'helper-text': mdiFormTextbox,
   'tv-light': mdiTelevisionAmbientLight,
   sconce: mdiWallSconceFlat,
   'led-strip': mdiLedStripVariant,
@@ -244,16 +265,19 @@ export const icons = {
   fire: mdiFire,
   flash: mdiFlash,
   'flower-outline': mdiFlowerOutline,
+  garage: mdiGarage,
   gate: mdiGate,
   home: mdiHomeOutline,
   'home-roof': mdiHomeRoof,
   info: mdiInformationOutline,
   keyboard: mdiKeyboardOutline,
   leaf: mdiLeaf,
+  sprout: mdiSprout,
   'light-group': mdiLightbulbGroupOutline,
   light: mdiLightbulbOutline,
   bolt: mdiLightningBolt,
   lock: mdiLock,
+  fingerprint: mdiFingerprint,
   mic: mdiMicrophoneOutline,
   talk: mdiAccountVoice,
   hangup: mdiPhoneHangup,
@@ -283,6 +307,7 @@ export const icons = {
   thermometer: mdiThermometer,
   toilet: mdiToilet,
   tune: mdiTune,
+  pencil: mdiPencilOutline,
   back: mdiUndoVariant,
   'volume-high': mdiVolumeHigh,
   'volume-minus': mdiVolumeMinus,
@@ -297,6 +322,12 @@ export const icons = {
   co: mdiMoleculeCo,
   'battery-alert': mdiBatteryAlert,
   battery: mdiBattery,
+  'transmission-tower': mdiTransmissionTower,
+  download: mdiDownload,
+  'trending-up': mdiTrendingUp,
+  'trending-down': mdiTrendingDown,
+  tablet: mdiTabletDashboard,
+  'lock-open': mdiLockOpenVariantOutline,
   'battery-50': mdiBattery50,
   'battery-20': mdiBattery20,
   sunset: mdiWeatherSunset,
@@ -305,9 +336,20 @@ export const icons = {
   sun: mdiWhiteBalanceSunny,
   palm: mdiPalmTree,
   shutter: mdiWindowShutter,
+  'shutter-open': mdiWindowShutterOpen,
+  'shutter-alert': mdiWindowShutterAlert,
 };
 
 export const icon = (name) => icons[name] ?? mdiLightbulbOutline;
+
+/** A trigger device's icon, from what it is called: a garage
+ *  door is not a gate. */
+export function impulseIcon(name) {
+  const n = String(name ?? '').toLowerCase();
+  if (/portail|portillon|barri[eè]re|\bgate\b/.test(n)) return 'gate';
+  if (/garage|porte|\bdoor\b/.test(n)) return 'garage';
+  return 'gate';
+}
 
 /** WMO weather code (Open-Meteo) → icon and words (said in the house's
  *  language when called, not when the module loads). */

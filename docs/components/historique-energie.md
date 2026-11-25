@@ -7,10 +7,21 @@
   purgée (une valeur stable a toujours une valeur « avant la fenêtre »).
 - Lecture : `series(point, from, to, max_points)` → valeurs brutes, ou seaux (moyenne, min,
   max, nombre) quand il y en a trop.
+- **Points gardés à vie** (`[server] history_hourly`, par exemple la température
+  extérieure) : chaque heure devient une statistique (moyenne pondérée par le temps que
+  chaque valeur a tenu, plus basse, plus haute) dans `hourly_stats`, jamais purgée. Calculée
+  toutes les heures, toujours avant la purge ; une valeur nulle ou non numérique est un trou
+  (l'heure sans valeur connue n'a pas de ligne). `series` lit ces heures dès que la fenêtre
+  remonte plus loin que les changements gardés : rien que des seaux, une heure pesant autant
+  qu'une autre.
+- **Reprise** : `moli-os history import` (lignes JSON `{"point", "hour", "avg", "min",
+  "max"}` sur l'entrée standard, par exemple les statistiques long terme de HA ou une archive
+  météo) ; seulement les heures d'avant les statistiques de Moli pour ce point
+  (`hourly_since`), sans écraser une heure connue. Rejouable, Moli en marche.
 - Surfaces : `/api/history` (courbes du dashboard), outil MCP `history` (statistiques +
   série compacte) et **`history_sql`** pour les agents : une seule requête `SELECT`, `ATTACH`,
-  `PRAGMA`, `BEGIN` interdits, 2 s et 200 lignes maximum, 64 Ko par valeur, sur la vue
-  `history(point, ts, kind, num, txt)`.
+  `PRAGMA`, `BEGIN` interdits, 2 s et 200 lignes maximum, 64 Ko par valeur, sur les vues
+  `history(point, ts, kind, num, txt)` et `hourly(point, hour, avg, min, max)`.
 - Utilisé par : les courbes, les passages du jour (caméras), « dernier passage » à la porte,
   Moli (questions sur le passé), le nœud d'automatisme… (les automatismes lisent l'état
   courant, pas l'historique).
@@ -37,7 +48,8 @@ Les compteurs cumulés deviennent des **kWh et des euros heure par heure**, gard
   - `estimate = true` (appareil seulement, sans `integrate` ni `power`) : une **lumière connectée** qui ne mesure rien ; `point` = un point de la lampe ou d'un luminaire `lumieres:…`. Moli estime sa puissance d'après le profil mesuré de son modèle (powercalc, licence MIT, condensé par `scripts/light-profiles.py` dans `crates/moli-energy/src/estimate.rs` : LCA006, LTW001, LWA017, L530) : luminosité, blanc ou couleur, veille éteinte, **0 quand elle est coupée au mur** ; un luminaire = la somme de ses ampoules. Comptée dans le temps comme `integrate`, jamais ajoutée aux totaux, `estimated: true` dans l'API, « ≈ estimé » à l'écran. Modèle inconnu : pas d'estimation (jamais de chiffre inventé).
   - Pas repris de HA : ses capteurs « powercalc » (estimations, pas des mesures).
   - `history = true` : `point` donne une consommation déjà découpée par heure, en texte JSON
-    (`[{"hour": ms, "kwh": …}]`), pour un service qui répond un jour après (pilote `enedis`). Chaque
+    (`[{"hour": ms, "kwh": …}]`), pour un service qui répond un jour après (pilotes `enedis` et
+    `grdf` ; pour le gaz, `role = "gas"`, en kWh, sans `kwh_per_unit`). Chaque
     heure est classée à sa place, jamais étalée sur le moment du relevé ; ce qui est déjà classé
     reste. Le prix vient de `price`, pas de la période tarifaire. Si tous les compteurs `grid` et
     `total` sont ainsi en retard, la projection du mois s'arrête à la dernière heure reçue.
@@ -60,6 +72,28 @@ Les compteurs cumulés deviennent des **kWh et des euros heure par heure**, gard
     heures qui suivent**, sans redémarrage ; une heure déjà comptée garde le prix de son
     époque (rien n'est recalculé). Un prix au-dessus de 5 par kWh est refusé : c'est un prix
     tapé en centimes.
+  - **Historique des prix de la maison** : toute la liste se modifie d'un coup (bouton
+    « Modifier l'historique » de la carte « Prix du kWh », ou `PUT /api/energy/prices`) : un
+    tarif ajouté avec sa date passée, un prix corrigé, un tarif retiré. Chaque prix vaut de sa
+    date jusqu'au suivant. Les heures déjà comptées **à partir du premier changement** sont
+    alors recalculées (une heure prend le prix en vigueur en son milieu, aucun avant le premier
+    prix), pour les compteurs que ce prix chiffre : ceux qui consomment, sans `price` ni
+    `price_point`, dans une maison sans `[energy.tariff]` (dont les périodes passées ne sont pas
+    gardées : rien n'est recalculé). Journalisé (`setting`, `energy.prices`).
+  - **Prix d'un fournisseur** (`price_point`, `price_extra`, par compteur) : `price_point` = le
+    point qui donne le prix du kWh du fournisseur (le pilote `engie` :
+    `engie:contract-…/electricity_offtake_peak`), suivi quand il change ; `price_extra` = ce que
+    ce prix laisse de côté, ajouté à chaque kWh (coûts de réseau, accises, certificats, TVA
+    comprise ; 0 à 5). Le prix d'une heure est celui du point au moment où elle est comptée.
+    Sans valeur au point (pilote pas encore connecté, ou une valeur au-dessus de 5), le `price`
+    fixe du compteur sert, et c'est aussi lui qui chiffre l'historique importé. Pour un compteur
+    d'injection (`export`), `price_point` seul : la revente n'a ni réseau ni taxes.
+  - **Gaz** (`role = "gas"`) : un index de gaz (celui d'un compteur P1, en m³) avec
+    `kwh_per_unit` = le facteur de conversion du fournisseur (environ 11,4 kWh/m³, sur la
+    facture). Compté et chiffré à part (`gas` dans chaque période, carte « Gaz ce mois ») :
+    jamais ajouté à l'électricité, jamais chiffré par la période tarifaire ni le prix de la
+    maison, seulement par son `price` ou son `price_point` (+ `price_extra`). `kwh_per_unit`
+    sert aussi à tout compteur dont le point n'est ni en Wh ni en kWh.
   - `monthly_fee` (optionnel) : l'abonnement par mois TTC (par exemple 20 €) : la facture
     estimée = kWh du mois au rythme actuel + abonnement, comme le « Projection facture fin de
     mois » de HA. `budget` (optionnel) : le point qui tient le budget mensuel (par exemple
@@ -73,10 +107,19 @@ Les compteurs cumulés deviennent des **kWh et des euros heure par heure**, gard
   résumés, pas des compteurs à additionner. Sert les automatismes (par exemple une alerte de
   budget mensuel) et les agents.
 - Robustesse : saut impossible (> 36 kW) ou baisse = suspect ; remise à zéro comptée une fois
-  confirmée ; nouveau socle après 3 relevés cohérents ; chaque heure au prix de sa période
+  confirmée ; nouveau socle après 3 relevés cohérents (le suspect est gardé dans
+  `meter_suspect` et survit à un redémarrage ; un relevé qui le suit n'est jamais compté depuis
+  l'ancien socle juste parce que le temps passé rend le saut « possible ») ; un compteur dont on change le `point`
+  (un autre appareil sous le même `id`) repart de son premier relevé, sans compter l'écart
+  entre les deux totaux, et garde son historique ; chaque heure au prix de sa période
   (l'index HC n'est étalé que sur du temps HC).
 - Chiffre principal = la plus complète des deux mesures (`grid` et `total`, par exemple Linky
   et EM06).
+- **Jours entiers** (`history`) : une entrée peut aussi être un jour entier (`{"day": ms, "to": ms,
+  "kwh": …}`, de minuit à minuit, 23 à 25 heures), quand le service ne donne que le total du jour
+  (pilote `enedis` sans courbe). Il est réparti également sur ses heures **seulement si aucune heure
+  de ce compteur n'est déjà classée ce jour-là** : une courbe reçue, même en partie, n'est jamais
+  complétée, et rien ne compte deux fois.
 - **Historique repris de HA** (statistiques long terme, lecture seule) :
   `tools/home-assistant/ha-energy-export.py … | docker exec -i moli-os /moli-os energy
   import`, relançable sans doublon.
@@ -96,7 +139,47 @@ Les compteurs cumulés deviennent des **kWh et des euros heure par heure**, gard
   `consumption_w`. L'appareil `energie:maison` gagne `today_production_kwh`,
   `today_export_kwh`, `today_self_consumed_kwh`, `today_self_consumption_rate`,
   `today_self_sufficiency`, `month_production_kwh`, `month_self_consumption_rate` (%).
-  Pas encore : batterie.
+- **Batterie de la maison** : rôles `charge` (index de ce qui entre dans la batterie) et
+  `discharge` (index de ce qui en sort), sans prix, jamais dans `total`. Chaque période donne
+  `battery_charge` et `battery_discharge` ; le bilan solaire en tient compte : `consumption` =
+  acheté + autoconsommé − stocké + rendu (ce que la maison a vraiment utilisé sur la période),
+  `self_sufficiency` = (consommation − acheté) / consommation, `self_consumed` reste production −
+  injection (utilisé ou stocké). « Le reste de la maison » retranche ce qui est stocké et ajoute
+  ce qui est rendu, dans le bilan comme dans les graphiques par appareil (`energy-own.js`, qui
+  y ajoute aussi l'autoconsommé, comme `unmeasured`) ; chaque part y est alors comptée au prix
+  payé par kWh utilisé, plus par kWh acheté. Sans compteur `charge` ni `discharge`, rien ne
+  change. `[energy.battery]` (optionnel) : `soc` (le point de la charge, en %), `power` (W,
+  positif en charge ; avec `discharge_positive = true`, un point positif en décharge est
+  retourné), `capacity_kwh` (ce que la charge contient en kWh). Sans `power`, la puissance vient
+  des `power` des compteurs `charge` et `discharge` (entré − sorti, chacun positif), comme
+  `solar` donne la production : une batterie qui donne deux puissances positives (Jackery :
+  `charge_power`, `discharge_power`) se déclare en deux compteurs `integrate = true`, sans
+  `[energy.battery] power`. `/api/energy` ajoute `battery` (charge, puissance signée, kWh
+  contenus ; aussi sans `[energy.battery]`, dès qu'un compteur `charge` ou `discharge` a une
+  puissance) et `flows.battery_w` ; `consumption_w` = réseau + production − batterie.
+  L'appareil `energie:maison` gagne `today_battery_charge_kwh` et `today_battery_discharge_kwh`.
+  Page Énergie : carte « Batterie » (charge, en charge / alimente la maison / au repos, kWh du
+  jour) ; le flux en direct (Accueil, Énergie) montre la batterie sous la maison. Pas encore :
+  piloter la batterie, ni distinguer ce qu'elle a pris au réseau de ce qu'elle a pris au soleil.
+  Deux limites, connues : l'autosuffisance du jour suppose que tout ce qui est stocké vient du
+  soleil (chargée en heures creuses, la journée paraît moins autonome qu'elle n'est, le lendemain
+  plus : sur le mois, cela se compense aux pertes près) ; une batterie qui injecte vers le réseau
+  voit ce qu'elle a envoyé effacé par la borne « jamais plus d'injection que de production »,
+  seulement quand l'injection dépasse la production sur la période.
+  Ce qu'un premier pilotage de batterie (sous Home Assistant, un hiver) a appris, à respecter le
+  jour où le pilotage entrera ici :
+  - la mesure du réseau ne passe jamais par la batterie : elle peut se couper du réseau au
+    repos, et la maison perdrait la pince avec elle (lire le compteur en direct, voir le
+    profil `jackery-meter`) ;
+  - une batterie se vide aussi toute seule : une limite de décharge arrête la fourniture à la
+    maison, pas sa propre consommation. La réserve se pose avec une marge au-dessus du
+    plancher du fabricant (`min` du point, que le hub fait respecter), et une alerte prévient
+    avant de l'atteindre ;
+  - une consigne ne s'écrit que si elle change vraiment, par paliers (quelques points de
+    charge), pas à chaque relevé : un réglage réécrit toutes les cinq minutes ne sert à rien
+    et sollicite l'appareil ;
+  - ce que Moli ne peut pas commander (une charge forcée depuis le réseau, par exemple) reste
+    dit comme tel à la famille : jamais de promesse qu'un réglage ne peut pas tenir.
 - **Charges pilotées** (`[[energy.load]]`, `crates/moli-energy/src/load.rs`) : un chauffe-eau
   (ou toute charge qui stocke) sur un relais, mis en marche sur le surplus solaire et complété
   en heures creuses. Logique **déterministe** (jamais de modèle dans la boucle), testée, un tour

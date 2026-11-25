@@ -1,8 +1,8 @@
 <script>
   import { onMount } from 'svelte';
-  import { home, hub, value, device, isOn, clock, num, relative, lastSeen, roomList, lampsOf, nameOf, doorOpen, leak, lowBattery, deviceKind, hidden, act, pending } from '../lib/home.svelte.js';
+  import { home, hub, value, device, isOn, clock, num, relative, lastSeen, roomList, lampsOf, nameOf, doorOpen, leak, lowBattery, deviceKind, hidden, alarmDevices, act, pending, roomOf, protectedRoom } from '../lib/home.svelte.js';
   import { isPrinter, phase } from '../lib/printers.js';
-  import { isValve } from '../lib/capabilities.js';
+  import { heatsOnly } from '../lib/radiator.js';
   import { t, locale } from '../../lib/i18n.svelte.js';
   import Icon from '../ui/Icon.svelte';
   import LightTile from '../ui/LightTile.svelte';
@@ -10,12 +10,19 @@
   import ValveCard from '../ui/ValveCard.svelte';
   import VacuumCard from '../ui/VacuumCard.svelte';
   import EnergyCard from '../ui/EnergyCard.svelte';
+  import EnergyFlow from '../ui/EnergyFlow.svelte';
+  import HistoryChart from '../ui/HistoryChart.svelte';
   import CameraTile from '../ui/CameraTile.svelte';
+  import LiveVideo from '../ui/LiveVideo.svelte';
   import AmbiancePicker from '../ui/AmbiancePicker.svelte';
+  import ScenePicker from '../ui/ScenePicker.svelte';
   import Routines from '../ui/Routines.svelte';
   import SkyHero from '../ui/SkyHero.svelte';
+  import { readOutside } from '../lib/outside.js';
+  import AlarmCard from '../ui/AlarmCard.svelte';
 
   const cfg = $derived(home.config ?? {});
+  const alarms = $derived(alarmDevices());
   const out = $derived(cfg.outdoor ?? {});
   // A robot goes through every room: it belongs to none.
   const robots = $derived(Object.values(hub.devices).filter((d) => deviceKind(d) === 'vacuum' && !hidden(d.id)));
@@ -58,6 +65,21 @@
     if (m !== mode) act(`${modeDevice.id}/state`, m, t('maison.accueil.mode_action', { mode: modeName(m) }));
   }
 
+  // Shortcuts: the switches the house uses most (home.json
+  // `favorites.switches`), one tap away, first thing on the page.
+  const shortcuts = $derived(
+    (cfg.favorites?.switches ?? [])
+      .map((s) => {
+        const cut = String(s.point ?? '').lastIndexOf('/');
+        return { ...s, id: s.point?.slice(0, cut), key: s.point?.slice(cut + 1) };
+      })
+      .filter((s) => s.id && s.key && device(s.id)),
+  );
+  function toggleShortcut(s) {
+    const on = isOn(s.id, s.key);
+    act(s.point, !on, t(on ? 'maison.accueil.raccourci_eteindre' : 'maison.accueil.raccourci_allumer', { name: s.name }));
+  }
+
   // The speakers that talk (announcements): one tap silences them all, for
   // four hours at most (they speak again by themselves).
   const talkers = $derived(Object.values(hub.devices).filter((d) => d.points.some((p) => p.key === 'quiet' && p.access?.write)));
@@ -76,7 +98,7 @@
       if (value(d.id, 'smoke') === true) list.push({ tone: 'alert', icon: 'fire', text: t('maison.accueil.fumee', { name: nameOf(d.id) }), href: '#/pieces' });
       if (leak(d.id)) list.push({ tone: 'alert', icon: 'water', text: t('maison.accueil.fuite', { name: nameOf(d.id) }), href: '#/pieces' });
     }
-    if (hub.approvals?.length) list.push({ tone: 'cool', icon: 'lock', text: t('maison.accueil.demandes', { count: hub.approvals.length }), href: '#/atelier' });
+    if (hub.approvals?.length) list.push({ tone: 'cool', icon: 'lock', text: t('maison.accueil.demandes', { count: hub.approvals.length }), href: hub.session.atelier !== false ? '#/atelier' : undefined });
     for (const door of cfg.doors ?? []) {
       const d = device(door.id);
       if (!d) continue;
@@ -138,6 +160,55 @@
               : t('maison.air.mauvais'),
   );
   const bell = $derived((cfg.favorites?.cameras ?? [])[0]);
+  // The door plays live (WebRTC, straight from the camera) where this
+  // browser reaches it: at home, or away too where the house opened its
+  // cameras' WebRTC port (home.json `live_outside`); never for a protected
+  // room (its live view needs a person). Elsewhere, or when the live view
+  // fails, its images every 15 s.
+  const atHome = $derived(!['access', 'outside'].includes(hub.session?.via));
+  const liveHere = $derived(atHome || cfg.live_outside === true);
+  let noLive = $state(null);
+  // Live only while someone looks: the page shown, and a touch, a click, a
+  // key or a scroll in the last 2 minutes (a wall tablet left alone, a
+  // forgotten tab, decode nothing). Back to images then; any gesture, or the
+  // screen waking, plays it again.
+  const LIVE_IDLE = 2 * 60_000;
+  let pageShown = $state(typeof document === 'undefined' || document.visibilityState === 'visible');
+  let idle = $state(false);
+  let idleTimer;
+  let lastGesture = 0;
+  function gesture() {
+    const now = Date.now();
+    if (!idle && now - lastGesture < 2000) return; // pointer moves come by the dozen
+    lastGesture = now;
+    idle = false;
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => (idle = true), LIVE_IDLE);
+  }
+  onMount(() => {
+    const events = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart', 'scroll'];
+    const onVisibility = () => {
+      pageShown = document.visibilityState === 'visible';
+      if (pageShown) gesture();
+    };
+    for (const e of events) window.addEventListener(e, gesture, { passive: true, capture: true });
+    document.addEventListener('visibilitychange', onVisibility);
+    gesture();
+    return () => {
+      clearTimeout(idleTimer);
+      for (const e of events) window.removeEventListener(e, gesture, { capture: true });
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  });
+  const liveShown = $derived(
+    !!bell &&
+      liveHere &&
+      pageShown &&
+      !idle &&
+      !!hub.devices[bell.id]?.live &&
+      !protectedRoom(roomOf(hub.devices[bell.id]) ?? '') &&
+      noLive !== bell.id,
+  );
 
   // The last real passage at the door (the history knows; the live value
   // is refreshed every few seconds whatever happens).
@@ -154,6 +225,22 @@
 
 <div class="accueil">
   <SkyHero />
+
+  {#if shortcuts.length}
+    <div class="shortcuts" role="group" aria-label={t('maison.accueil.raccourcis')}>
+      {#each shortcuts as s (s.point)}
+        {@const on = isOn(s.id, s.key)}
+        <button
+          class:on
+          aria-pressed={on}
+          disabled={pending(s.id, s.key) || device(s.id)?.online === false}
+          onclick={() => toggleShortcut(s)}
+        >
+          <span class="dot"><Icon name={s.icon ?? 'power'} size={20} /></span>{s.name}
+        </button>
+      {/each}
+    </div>
+  {/if}
 
   {#if modes.length}
     <div class="modes" role="radiogroup" aria-label={t('maison.accueil.mode_maison')}>
@@ -179,6 +266,10 @@
     {/each}
   </section>
 
+  {#each alarms as a (a.id)}
+    <AlarmCard id={a.id} />
+  {/each}
+
   <div class="grid">
     <section class="card lights">
       <div class="card-head">
@@ -190,6 +281,7 @@
           <LightTile id={l.id} name={l.name} icon={l.icon} also={l.also ?? []} />
         {/each}
       </div>
+      <ScenePicker />
       {#if mood}
         <div class="moods">
           <div class="moods-head">
@@ -207,6 +299,10 @@
 
     <div class="side">
       <EnergyCard />
+      <EnergyFlow home />
+      {#each cfg.charts ?? [] as c, i (i)}
+        <HistoryChart title={c.title} minutes={c.minutes ?? 60} points={c.points ?? []} />
+      {/each}
       <Routines />
     </div>
 
@@ -215,7 +311,7 @@
         <div class="card-head"><h2><Icon name="air-conditioner" size={18} />{t('maison.accueil.clim')}</h2></div>
         <div class="clims">
           {#each cfg.favorites?.climate ?? [] as c (c.id)}
-            {#if isValve(device(c.id))}<ValveCard id={c.id} name={c.name} />{:else}<ClimateCard id={c.id} name={c.name} />{/if}
+            {#if heatsOnly(device(c.id))}<ValveCard id={c.id} name={c.name} />{:else}<ClimateCard id={c.id} name={c.name} />{/if}
           {/each}
         </div>
       </section>
@@ -231,7 +327,11 @@
           <h2><Icon name="bell" size={18} />{t('maison.accueil.devant_porte')}</h2>
           <a class="more" href="#/cameras" aria-label={t('maison.accueil.toutes_cameras')}><Icon name="arrow-top-right" size={18} /></a>
         </div>
-        <CameraTile id={bell.id} name={bell.name} refresh={15} />
+        {#if liveShown}
+          <div class="cam-live"><LiveVideo id={bell.id} onfail={() => (noLive = bell.id)} /></div>
+        {:else}
+          <CameraTile id={bell.id} name={bell.name} refresh={15} />
+        {/if}
         <p class="muted small">{passage ? t('maison.accueil.dernier_passage', { when: relative(passage, home.now) }) : t('maison.accueil.personne')}</p>
       </section>
     {/if}
@@ -252,8 +352,8 @@
       <div class="card-head"><h2><Icon name="flower-outline" size={18} />{t('maison.accueil.dehors')}</h2><span class="more" aria-hidden="true"><Icon name="arrow-top-right" size={18} /></span></div>
       <div class="facts">
         <div><small>{t('maison.accueil.air')}</small><b>{aqiWord}</b></div>
-        <div><small>UV</small><b class="num">{num(value(out.air, 'uv_index'), 0)}</b></div>
-        <div><small>{t('maison.accueil.humidite')}</small><b class="num">{value(out.weather, 'humidity') != null ? `${num(value(out.weather, 'humidity'))} %` : '—'}</b></div>
+        <div><small>UV</small><b class="num">{num(readOutside(value, 'uv_index', out.air), 0)}</b></div>
+        <div><small>{t('maison.accueil.humidite')}</small><b class="num">{readOutside(value, 'humidity', out.weather) != null ? `${num(readOutside(value, 'humidity', out.weather))} %` : '—'}</b></div>
         {#if out.pool}
           <div><small>{t('maison.accueil.piscine')}</small><b class="num">{value(out.pool, 'temperature') != null ? `${num(value(out.pool, 'temperature'), 1)}°` : '—'}</b></div>
         {/if}
@@ -263,6 +363,13 @@
 </div>
 
 <style>
+  .cam-live {
+    border-radius: var(--r-md, 14px);
+    overflow: hidden;
+    aspect-ratio: 16 / 9;
+    background: #000;
+  }
+
   .accueil {
     display: grid;
     gap: 22px;
@@ -307,6 +414,53 @@
   .modes button.hush.on {
     background: color-mix(in srgb, var(--alert) 16%, var(--surface-2));
     color: var(--alert);
+  }
+
+  .shortcuts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .shortcuts button {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    border: 0;
+    border-radius: 999px;
+    padding: 8px 18px 8px 8px;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 650;
+    background: var(--surface-2);
+    color: var(--ink-2);
+    cursor: pointer;
+    transition: background 0.2s var(--ease), color 0.2s var(--ease);
+  }
+
+  .shortcuts .dot {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--surface, #fff);
+    color: var(--ink-3);
+  }
+
+  .shortcuts button.on {
+    background: var(--warm-soft);
+    color: var(--warm-ink);
+  }
+
+  .shortcuts button.on .dot {
+    background: var(--warm-ink);
+    color: var(--surface, #fff);
+  }
+
+  .shortcuts button:disabled {
+    opacity: 0.55;
+    cursor: default;
   }
 
   .notices {

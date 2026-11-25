@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use moli_core::{
     Action, ApprovalRequest, Decision, Device, DeviceId, DriverStatus, Event, InstanceId,
-    JournalEntry, Label, Origin, Outcome, PointId, PointSpec, Sample, Value, ValueError, now_ms,
-    validate,
+    JournalEntry, Kind, Label, Origin, Outcome, PointId, PointSpec, Sample, Semantic, Value,
+    ValueError, now_ms, validate,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -46,6 +46,9 @@ pub struct HubOptions {
     pub guard: GuardPolicy,
     pub event_capacity: usize,
     pub command_timeout: Duration,
+    /// A mirror of a house that runs elsewhere: every order is journaled
+    /// and refused ([`CommandError::Mirror`]), none reaches a driver.
+    pub mirror: bool,
 }
 
 impl Default for HubOptions {
@@ -60,6 +63,7 @@ impl Default for HubOptions {
             guard: GuardPolicy::default(),
             event_capacity: 1024,
             command_timeout: Duration::from_secs(5),
+            mirror: false,
         }
     }
 }
@@ -78,11 +82,18 @@ pub enum CommandError {
     Busy,
     #[error("driver did not answer in time")]
     Timeout,
+    #[error("command outcome unknown; the device may have carried it out")]
+    OutcomeUnknown,
     #[error("driver error: {0}")]
     Driver(String),
+    #[error("driver refused the command: {0}")]
+    DriverRefused(String),
     /// Held by the guard: a human must approve request `id`.
     #[error("awaiting human approval #{id}: {reason}")]
     NeedsApproval { id: u64, reason: String },
+    /// A mirror house sends no order: the house it mirrors acts.
+    #[error("mirror house: the order was not sent (the real house acts)")]
+    Mirror,
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -95,12 +106,46 @@ pub enum ApprovalError {
     Expired,
     #[error("this request is about another point than the one shown")]
     Mismatch,
+    /// Approving it wants the code typed now (`[guard] code_each_time`).
+    #[error("the house's code is needed for this order, each time")]
+    CodeNeeded,
     #[error("approved, but the order failed: {0}")]
     Command(CommandError),
 }
 
 /// How long a held order waits for a human.
 const APPROVAL_TTL_MS: u64 = 10 * 60 * 1000;
+/// A value read again unchanged is told (`Event::Seen`) at most this often
+/// per point (#230): enough for an age shown to the minute.
+pub const SEEN_EVERY_MS: u64 = 5 * 60 * 1000;
+
+/// What a reading tells the surfaces.
+#[derive(Debug, PartialEq, Eq)]
+enum Tell {
+    /// A new value (or a press, a copy, a first sample): `Event::State`.
+    Change,
+    /// The same value, read again, and nothing told about this point for
+    /// `SEEN_EVERY_MS`: `Event::Seen`.
+    Seen,
+    Nothing,
+}
+
+/// `changed`: the value is new (as `record_state` decides); `before`: the
+/// time of the reading it replaces; `ts`: its own; `told`: when this point
+/// was last told (a change or a `Seen`), else `before`.
+fn tell(changed: bool, before: Option<u64>, ts: u64, told: Option<u64>) -> Tell {
+    if changed {
+        return Tell::Change;
+    }
+    match before {
+        Some(before)
+            if ts > before && ts.saturating_sub(told.unwrap_or(before)) >= SEEN_EVERY_MS =>
+        {
+            Tell::Seen
+        }
+        _ => Tell::Nothing,
+    }
+}
 /// Orders waiting for a human, at most: a flood of requests must not bury
 /// the dashboard. Past it, whoever holds the most, the new request counted,
 /// gives way (their oldest): a flood never pushes out the request of someone
@@ -113,6 +158,14 @@ pub const MAX_PENDING_PER_CALLER: usize = 32;
 const MAX_POINT: usize = 256;
 /// Who acts, as declared by an agent: a name, not a message.
 const MAX_ACTOR: usize = 64;
+/// How long a switch has to say it obeyed before the order goes again: a
+/// bridge that restarts (Zigbee2MQTT when its coordinator drops) swallows
+/// what it was sent, and the driver had answered « sent » all the same.
+pub const CONFIRM_WINDOW: Duration = Duration::from_secs(30);
+/// How often a followed order looks at the switch's state.
+const CONFIRM_POLL: Duration = Duration::from_millis(500);
+/// Sends of one order to a switch, at most, the first one counted.
+pub const MAX_SENDS: u32 = 5;
 
 /// An agent's declared name, as journaled: bounded, no control characters.
 fn clean_actor(actor: Option<String>) -> Option<String> {
@@ -126,6 +179,55 @@ fn clean_actor(actor: Option<String>) -> Option<String> {
         .filter(|a| !a.trim().is_empty())
 }
 
+/// An order to a switch being followed, and what the house heard since it left.
+struct Watch {
+    point: PointId,
+    wanted: Value,
+    order: u64,
+    /// When the order left: a value restored from the cache is older.
+    since: u64,
+    events: broadcast::Receiver<Event>,
+}
+
+impl Watch {
+    /// Whether a report heard since the order left says it was obeyed.
+    fn heard(&mut self) -> bool {
+        loop {
+            match self.events.try_recv() {
+                Ok(Event::State {
+                    point, value, ts, ..
+                }) if point == self.point && ts >= self.since && switched(&value, &self.wanted) => {
+                    return true;
+                }
+                Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => return false,
+            }
+        }
+    }
+}
+
+/// A failure that may not happen again: the order is worth sending later.
+fn transient(e: &CommandError) -> bool {
+    matches!(
+        e,
+        CommandError::DriverUnavailable
+            | CommandError::Busy
+            | CommandError::Driver(_)
+            | CommandError::Timeout
+    )
+}
+
+/// Whether a switch's state is the one ordered (`ON` is true).
+fn switched(current: &Value, wanted: &Value) -> bool {
+    let truth = |v: &Value| match v {
+        Value::Bool(b) => Some(*b),
+        Value::Text(t) if t.eq_ignore_ascii_case("on") => Some(true),
+        Value::Text(t) if t.eq_ignore_ascii_case("off") => Some(false),
+        _ => None,
+    };
+    truth(current).is_some_and(|c| truth(wanted) == Some(c))
+}
+
 /// An order resolved and validated, ready for its driver.
 struct Prepared {
     point: PointId,
@@ -133,6 +235,13 @@ struct Prepared {
     key: Arc<str>,
     value: Value,
     commands: mpsc::Sender<CommandRequest>,
+    /// Its driver changes nothing outside Moli: a mirror lets it through.
+    inside: bool,
+    /// An on/off switch that reports its state: its order is followed until
+    /// the state says it was obeyed (see [`CONFIRM_WINDOW`]). Sending it again
+    /// changes nothing when it was; a momentary point (a gate's pulse) is
+    /// never resent.
+    confirm: bool,
 }
 
 /// An order held for a human, and who asked for it.
@@ -220,6 +329,8 @@ impl Approvals {
 pub enum LabelError {
     #[error("unknown device")]
     UnknownDevice,
+    #[error("unknown point")]
+    UnknownPoint,
     #[error("could not persist labels: {0}")]
     Persist(#[from] std::io::Error),
     #[error("{0}")]
@@ -259,11 +370,14 @@ impl LabelPatch {
         Label {
             name: merge(self.name, current.name),
             room: merge(self.room, current.room),
+            points: current.points,
         }
     }
 }
 
 /// Everything known about one device, as served to the surfaces.
+// One flag per capability a surface asks about (images, printing, live, past).
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Serialize)]
 pub struct DeviceView {
     #[serde(flatten)]
@@ -280,6 +394,9 @@ pub struct DeviceView {
     /// Live video the browser plays (`/api/devices/{id}/live`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub live: bool,
+    /// A past to review (`/api/devices/{id}/review/…`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub review: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -334,6 +451,9 @@ struct Inner {
     published: Mutex<HashMap<String, (Instant, crate::media::Image)>>,
     /// The assistant voice satellites talk to (set after the drivers start).
     voice: std::sync::OnceLock<Arc<dyn crate::voice::VoiceBrain>>,
+    /// The latest order sent to each point, numbered: a followed order gives
+    /// way to a newer one on the same point (see [`CONFIRM_WINDOW`]).
+    orders: Mutex<HashMap<PointId, u64>>,
     opts: HubOptions,
     started: Instant,
 }
@@ -382,6 +502,9 @@ struct Model {
     /// Retained values are displayable, but not usable as current observations
     /// until each point receives its first sample from this driver run.
     awaiting_samples: HashMap<DeviceId, BTreeSet<Arc<str>>>,
+    /// Per point, when its reading was last told (a change or a `Seen`):
+    /// a value read again unchanged is told again after `SEEN_EVERY_MS`.
+    told: HashMap<DeviceId, HashMap<Arc<str>, u64>>,
     availability: HashMap<DeviceId, bool>,
     /// Devices taken offline because their driver failed, with what they
     /// were before: given back when the driver runs again, unless it said
@@ -393,6 +516,7 @@ struct Model {
     snapshots: HashMap<DeviceId, Arc<dyn crate::media::SnapshotSource>>,
     printers: HashMap<DeviceId, Arc<dyn crate::media::PrintSink>>,
     lives: HashMap<DeviceId, Arc<dyn crate::media::LiveSource>>,
+    reviews: HashMap<DeviceId, Arc<dyn crate::media::ReviewSource>>,
 }
 
 #[derive(Debug)]
@@ -402,6 +526,8 @@ struct DriverSlot {
     status: DriverStatus,
     warning: Option<String>,
     commands: mpsc::Sender<CommandRequest>,
+    /// Its orders change nothing outside Moli ([`Driver::stays_inside`]).
+    inside: bool,
 }
 
 #[derive(Debug)]
@@ -415,6 +541,9 @@ impl Hub {
     /// A corrupt state cache is discarded (it is only a cache); corrupt
     /// labels are an error (they are user data).
     pub fn new(opts: HubOptions) -> std::io::Result<Self> {
+        if opts.mirror {
+            tracing::warn!("mirror house: devices are read, no order is sent");
+        }
         let labels = match &opts.labels_path {
             Some(path) => labels::load(path)?,
             None => BTreeMap::new(),
@@ -496,6 +625,7 @@ impl Hub {
             images: Mutex::new(HashMap::new()),
             published: Mutex::new(HashMap::new()),
             voice: std::sync::OnceLock::new(),
+            orders: Mutex::new(HashMap::new()),
             opts,
             started: Instant::now(),
         })))
@@ -567,6 +697,21 @@ impl Hub {
         ))
     }
 
+    /// Whether a point is there to be read: its device is in the house,
+    /// has this point, and is not known to be offline.
+    #[must_use]
+    pub fn answers(&self, point: &PointId) -> bool {
+        let Some((device, key)) = point.split() else {
+            return false;
+        };
+        let model = self.read();
+        model
+            .devices
+            .get(&device)
+            .is_some_and(|d| d.points.iter().any(|p| &*p.key == key))
+            && model.availability.get(&device) != Some(&false)
+    }
+
     #[must_use]
     pub fn state(&self, point: &PointId) -> Option<Sample> {
         let (device, key) = point.split()?;
@@ -588,6 +733,18 @@ impl Hub {
             return None;
         }
         model.states.get(&device)?.get(key).cloned()
+    }
+
+    /// Whether one of `device`'s points still awaits its first sample of this
+    /// run: restored values are not usable until the owning driver confirms
+    /// one (a live reading, or a value read from the gateway's snapshot).
+    #[must_use]
+    pub(crate) fn is_awaiting(&self, device: &DeviceId, key: &str) -> bool {
+        let model = self.read();
+        model
+            .awaiting_samples
+            .get(device)
+            .is_some_and(|keys| keys.contains(key))
     }
 
     /// Most recent journal entries first.
@@ -666,12 +823,21 @@ impl Hub {
             );
             return Err(error);
         }
+        // The guard judges the value as the device will take it (validated:
+        // `0` and `0.0` are one number), not as it was spelt.
         let result = match self.prepare(point, &value) {
             Err(e) => Err(e),
-            Ok(prepared) => match self.verdict_for(point, &value, origin) {
-                Verdict::Allow => self.send(prepared).await,
+            Ok(prepared) => match self.verdict_for(point, &prepared.value, origin) {
+                Verdict::Allow => self.send_followed(prepared, origin, actor.as_ref()).await,
                 Verdict::Approval(reason) => {
-                    let id = self.hold(point, &value, origin, actor.clone(), caller, &reason);
+                    let id = self.hold(
+                        point,
+                        &prepared.value,
+                        origin,
+                        actor.clone(),
+                        caller,
+                        &reason,
+                    );
                     Err(CommandError::NeedsApproval { id, reason })
                 }
             },
@@ -708,7 +874,17 @@ impl Hub {
         origin: Origin,
     ) -> Option<String> {
         let verdict = match value {
-            Some(value) => self.verdict_for(point, value, origin),
+            Some(value) => {
+                let value = self.validated(point, value);
+                self.verdict_for(point, &value, origin)
+            }
+            // No value (a toggle): what wants the code each time, whichever
+            // way it goes, is held.
+            None if origin != Origin::Automation
+                && self.0.opts.guard.code_each_time_on(point.as_str()) =>
+            {
+                Verdict::Approval(moli_i18n::tr!("serveur.garde.code_chaque_fois"))
+            }
             // No value (a toggle): what may open is held, whichever way it goes.
             None if is_agent(origin) && self.opener_of(point) != Opener::None => {
                 Verdict::Approval(moli_i18n::tr!("serveur.garde.ouverture"))
@@ -719,6 +895,27 @@ impl Hub {
             Verdict::Allow => None,
             Verdict::Approval(reason) => Some(reason),
         }
+    }
+
+    /// Whether an order on this point wants the house's code typed for it,
+    /// each time (`[guard] code_each_time`): `value` as it will be sent, or
+    /// `None` for a toggle (any rule on the point counts). An automation
+    /// carrying such an order is approved with the code.
+    #[must_use]
+    pub fn wants_code(&self, point: &PointId, value: Option<&Value>) -> bool {
+        let guard = &self.0.opts.guard;
+        match value {
+            Some(value) => guard.code_each_time(point.as_str(), &self.validated(point, value)),
+            None => guard.code_each_time_on(point.as_str()),
+        }
+    }
+
+    /// `value` as the point would take it, or as it is when the point does
+    /// not take it (unknown, read-only, the wrong kind): the guard then
+    /// judges what was asked.
+    fn validated(&self, point: &PointId, value: &Value) -> Value {
+        self.prepare(point, value)
+            .map_or_else(|_| value.clone(), |prepared| prepared.value)
     }
 
     /// What the guard says about an order on this point from this origin.
@@ -755,8 +952,31 @@ impl Hub {
     /// The verdict on this very order: opening a lock, a garage door or a gate is a
     /// person's call, whatever the room (closing is not); then the point's verdict.
     fn verdict_for(&self, point: &PointId, value: &Value, origin: Origin) -> Verdict {
+        // Some orders want the code each time, an open session or not
+        // (disarming the alarm). Only an automation goes without: a person
+        // approved it with the code (`Automations::approve_with_code`). The
+        // house's own orders (a scene, a fixture, a driven load) are sent on
+        // somebody's behalf, from a gesture that typed no code: held too.
+        if origin != Origin::Automation && self.0.opts.guard.code_each_time(point.as_str(), value) {
+            return Verdict::Approval(moli_i18n::tr!("serveur.garde.code_chaque_fois"));
+        }
         if is_agent(origin) && self.opens(point, value) {
             return Verdict::Approval(moli_i18n::tr!("serveur.garde.ouverture"));
+        }
+        // A person allowed agents this very order (arming the alarm by
+        // voice): no person is needed for the control or the device, but
+        // protected rooms and quiet hours still hold.
+        if is_agent(origin) && self.0.opts.guard.agents_may(point.as_str(), value) {
+            let rooms = point
+                .split()
+                .map(|(device, _)| self.rooms_of(&device))
+                .unwrap_or_default();
+            let rooms: Vec<&str> = rooms.iter().map(String::as_str).collect();
+            return self
+                .0
+                .opts
+                .guard
+                .check(&rooms, origin, jiff::Timestamp::now());
         }
         self.verdict(point, origin)
     }
@@ -958,6 +1178,7 @@ impl Hub {
                 device_name,
                 native_name,
                 rooms,
+                code: self.0.opts.guard.code_each_time(point.as_str(), value),
             });
             let held = Held {
                 request: Arc::clone(&request),
@@ -1001,9 +1222,10 @@ impl Hub {
             .collect()
     }
 
-    /// A human approves (the order runs now) or denies a held order.
-    /// Only the dashboard (`Origin::Ui`) may decide, and it must name the
-    /// point it saw: a decision never lands on a request it did not show.
+    /// [`Hub::resolve_approval_with_code`], the code not typed for it.
+    ///
+    /// # Errors
+    /// See [`ApprovalError`].
     pub async fn resolve_approval(
         &self,
         id: u64,
@@ -1011,6 +1233,22 @@ impl Hub {
         approve: bool,
         origin: Origin,
         actor: Option<String>,
+    ) -> Result<(), ApprovalError> {
+        self.resolve_approval_with_code(id, expected_point, approve, origin, actor, false)
+            .await
+    }
+
+    /// A human approves (the order runs now) or denies a held order.
+    /// Only the dashboard (`Origin::Ui`) may decide, and it must name the
+    /// point it saw: a decision never lands on a request it did not show.
+    pub async fn resolve_approval_with_code(
+        &self,
+        id: u64,
+        expected_point: &PointId,
+        approve: bool,
+        origin: Origin,
+        actor: Option<String>,
+        code_typed: bool,
     ) -> Result<(), ApprovalError> {
         if origin != Origin::Ui {
             return Err(ApprovalError::HumanOnly);
@@ -1026,6 +1264,10 @@ impl Hub {
                 None => return Err(ApprovalError::Unknown),
                 Some(held) if &held.request.point != expected_point => {
                     return Err(ApprovalError::Mismatch);
+                }
+                // Left waiting: the code can still be typed.
+                Some(held) if approve && held.request.code && !code_typed => {
+                    return Err(ApprovalError::CodeNeeded);
                 }
                 Some(_) => approvals.take(id).ok_or(ApprovalError::Unknown)?,
             }
@@ -1043,7 +1285,7 @@ impl Hub {
         }
         let (decision, outcome, result) = if approve {
             let sent = match self.prepare(&request.point, &request.value) {
-                Ok(prepared) => self.send(prepared).await,
+                Ok(prepared) => self.send_followed(prepared, origin, actor.as_ref()).await,
                 Err(e) => Err(e),
             };
             match sent {
@@ -1136,6 +1378,52 @@ impl Hub {
                 fingerprint,
             },
             Outcome::Ok,
+            Instant::now(),
+        );
+    }
+
+    /// Journals a human's persisted driver installation without its address.
+    pub fn record_driver_added(
+        &self,
+        instance: InstanceId,
+        driver_kind: &str,
+        read_only: bool,
+        actor: Option<String>,
+        outcome: Outcome,
+    ) {
+        self.record(
+            Origin::Ui,
+            actor,
+            Action::DriverAdded {
+                instance,
+                driver_kind: driver_kind.to_owned(),
+                read_only,
+            },
+            outcome,
+            Instant::now(),
+        );
+    }
+
+    /// Journals a human's persisted driver edit without its address or secrets.
+    pub fn record_driver_configured(
+        &self,
+        instance: InstanceId,
+        driver_kind: &str,
+        enabled: bool,
+        read_only: bool,
+        actor: Option<String>,
+        outcome: Outcome,
+    ) {
+        self.record(
+            Origin::Ui,
+            actor,
+            Action::DriverConfigured {
+                instance,
+                driver_kind: driver_kind.to_owned(),
+                enabled,
+                read_only,
+            },
+            outcome,
             Instant::now(),
         );
     }
@@ -1358,6 +1646,95 @@ impl Hub {
         result
     }
 
+    /// Names one point of a device (a power strip's outlet); `""` forgets
+    /// the name. Like a device's name: an agent may name a point nobody
+    /// named yet, never rename one. `named_elsewhere`: the family already
+    /// named it outside Moli's labels (`home.json` `outlets`), which counts
+    /// as a name.
+    pub async fn set_point_label(
+        &self,
+        device: &DeviceId,
+        key: &str,
+        name: &str,
+        named_elsewhere: bool,
+        origin: Origin,
+        actor: Option<String>,
+    ) -> Result<Label, LabelError> {
+        let started = Instant::now();
+        let renames = matches!(origin, Origin::Ui | Origin::System | Origin::Household);
+        let result = self
+            .write_point_label(device, key, name, renames || !named_elsewhere, renames)
+            .await;
+        let outcome = match &result {
+            Ok(_) => Outcome::Ok,
+            Err(e) => Outcome::Err(e.to_string()),
+        };
+        let label = result.as_ref().ok().cloned().unwrap_or_default();
+        self.record(
+            origin,
+            actor,
+            Action::Label {
+                device: device.clone(),
+                label,
+            },
+            outcome,
+            started,
+        );
+        result
+    }
+
+    /// `may_name`: the caller may name a point that has no name yet;
+    /// `may_rename`: also one that has. Judged under the write lock, so a
+    /// name a person gives at the same moment is never overwritten.
+    async fn write_point_label(
+        &self,
+        device: &DeviceId,
+        key: &str,
+        name: &str,
+        may_name: bool,
+        may_rename: bool,
+    ) -> Result<Label, LabelError> {
+        let _guard = self.0.label_write.lock().await;
+        let mut next = {
+            let model = self.read();
+            let known = model.devices.get(device).ok_or(LabelError::UnknownDevice)?;
+            if known.point(key).is_none() {
+                return Err(LabelError::UnknownPoint);
+            }
+            let named = model
+                .labels
+                .get(device)
+                .is_some_and(|l| l.points.contains_key(key));
+            if !may_name || (named && !may_rename) {
+                return Err(LabelError::Guarded(moli_i18n::tr!(
+                    "serveur.garde.renommer_humain"
+                )));
+            }
+            model.labels.clone()
+        };
+        let mut label = next.get(device).cloned().unwrap_or_default();
+        let name = clean_label(name);
+        if name.is_empty() {
+            label.points.remove(key);
+        } else {
+            label.points.insert(key.to_owned(), name);
+        }
+        if label.is_empty() {
+            next.remove(device);
+        } else {
+            next.insert(device.clone(), label.clone());
+        }
+        if let Some(path) = &self.0.opts.labels_path {
+            labels::save(path, &next).await?;
+        }
+        self.write().labels = next;
+        self.emit(Event::LabelChanged {
+            device: device.clone(),
+            label: label.clone(),
+        });
+        Ok(label)
+    }
+
     /// Only a human may move a device out of (or between) protected rooms:
     /// otherwise an agent could relabel a bedroom lamp, then command it. The
     /// dashboard without a code names freely, but moves like an agent.
@@ -1421,7 +1798,7 @@ impl Hub {
     /// Resolves and validates an order without sending it.
     fn prepare(&self, point: &PointId, value: &Value) -> Result<Prepared, CommandError> {
         let (device_id, key) = point.split().ok_or(CommandError::UnknownPoint)?;
-        let (device, key, kind, commands) = {
+        let (device, key, kind, commands, inside, confirm) = {
             let model = self.read();
             let device = model
                 .devices
@@ -1435,31 +1812,167 @@ impl Hub {
                 .drivers
                 .get(&device.instance)
                 .ok_or(CommandError::DriverUnavailable)?;
+            let confirm =
+                spec.semantic == Semantic::OnOff && spec.kind == Kind::Binary && spec.access.read;
             (
                 Arc::clone(device),
                 spec.key.clone(),
                 spec.kind.clone(),
                 slot.commands.clone(),
+                slot.inside,
+                confirm,
             )
         };
         let value = validate(&kind, value)?;
+        // A gate, a garage door or a lock whose report was lost has still
+        // moved: sent again, it would open, close and open with nobody there.
+        // Its order goes once, as before.
+        let confirm = confirm && matches!(self.opener_of(point), Opener::None);
         Ok(Prepared {
             point: point.clone(),
             device,
             key,
             value,
             commands,
+            inside,
+            confirm,
         })
+    }
+
+    /// [`Hub::send`], then, for a switch, the order is followed: sent again
+    /// while its state does not say it was obeyed, [`MAX_SENDS`] times at most.
+    async fn send_followed(
+        &self,
+        prepared: Prepared,
+        origin: Origin,
+        actor: Option<&String>,
+    ) -> Result<(), CommandError> {
+        let order = self.next_order(&prepared.point);
+        // Listening starts before the order leaves: a relay that falls back
+        // at once (a gate's pulse nobody declared as such) is on for less
+        // than a look at its state, but its report is heard.
+        let follow = prepared.confirm.then(|| Watch {
+            point: prepared.point.clone(),
+            wanted: prepared.value.clone(),
+            order,
+            since: now_ms(),
+            events: self.subscribe(),
+        });
+        let sent = self.send(prepared).await;
+        if let Some(watch) = follow
+            && sent.as_ref().err().is_none_or(transient)
+        {
+            self.follow(watch, origin, actor.cloned());
+        }
+        sent
+    }
+
+    /// Numbers a new order on `point`: the orders before it stop being followed.
+    fn next_order(&self, point: &PointId) -> u64 {
+        let mut orders = self.0.orders.lock().unwrap_or_else(PoisonError::into_inner);
+        let n = orders.entry(point.clone()).or_insert(0);
+        *n += 1;
+        *n
+    }
+
+    fn is_latest(&self, point: &PointId, order: u64) -> bool {
+        self.0
+            .orders
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(point)
+            == Some(&order)
+    }
+
+    /// Sends `wanted` again each time [`CONFIRM_WINDOW`] passes without the
+    /// switch saying it obeyed, each send journaled as such; after the last
+    /// one, journals that it never did. A newer order on the point, or a
+    /// guard that would now hold it, ends the follow-up.
+    fn follow(&self, mut watch: Watch, origin: Origin, actor: Option<String>) {
+        let hub = self.clone();
+        tokio::spawn(async move {
+            let (point, wanted) = (watch.point.clone(), watch.wanted.clone());
+            let action = Action::Command {
+                point: point.clone(),
+                value: wanted.clone(),
+            };
+            for send in 2..=MAX_SENDS {
+                if hub.settled(&mut watch).await
+                    || !matches!(hub.verdict_for(&point, &wanted, origin), Verdict::Allow)
+                {
+                    return;
+                }
+                let started = Instant::now();
+                let sent = match hub.prepare(&point, &wanted) {
+                    Ok(prepared) => hub.send(prepared).await,
+                    Err(e) => Err(e),
+                };
+                let note = moli_i18n::tr!("serveur.ordre.renvoi", envoi = send, envois = MAX_SENDS);
+                let by = match &actor {
+                    Some(actor) => format!("{note} · {actor}"),
+                    None => note,
+                };
+                let outcome = match &sent {
+                    Ok(()) => Outcome::Ok,
+                    Err(e) => Outcome::Err(e.to_string()),
+                };
+                hub.record(origin, Some(by), action.clone(), outcome, started);
+                if sent.as_ref().err().is_some_and(|e| !transient(e)) {
+                    return;
+                }
+            }
+            if !hub.settled(&mut watch).await {
+                hub.record(
+                    origin,
+                    actor,
+                    action,
+                    Outcome::Err(moli_i18n::tr!(
+                        "serveur.ordre.non_confirme",
+                        envois = MAX_SENDS
+                    )),
+                    Instant::now(),
+                );
+            }
+        });
+    }
+
+    /// Whether, within [`CONFIRM_WINDOW`], the switch says it obeyed (now,
+    /// or in any report since the order left) or a newer order took over:
+    /// either way, nothing is left to follow.
+    async fn settled(&self, watch: &mut Watch) -> bool {
+        let polls = CONFIRM_WINDOW.as_millis() / CONFIRM_POLL.as_millis();
+        for poll in 0..=polls {
+            if !self.is_latest(&watch.point, watch.order)
+                || watch.heard()
+                || self
+                    .current_state(&watch.point)
+                    .is_some_and(|s| switched(&s.value, &watch.wanted))
+            {
+                return true;
+            }
+            if poll < polls {
+                tokio::time::sleep(CONFIRM_POLL).await;
+            }
+        }
+        false
     }
 
     /// Hands a prepared order to its driver and waits for the answer.
     async fn send(&self, prepared: Prepared) -> Result<(), CommandError> {
+        // Every order ends here, approved ones too: a mirror stops them all,
+        // but those that change nothing outside Moli (it runs them in the
+        // shadow of the real house).
+        if self.0.opts.mirror && !prepared.inside {
+            return Err(CommandError::Mirror);
+        }
         let Prepared {
             point,
             device,
             key,
             value,
             commands,
+            inside: _,
+            confirm: _,
         } = prepared;
         let (reply, answer) = oneshot::channel();
         commands
@@ -1476,9 +1989,22 @@ impl Hub {
                 mpsc::error::TrySendError::Closed(_) => CommandError::DriverUnavailable,
             })?;
         match tokio::time::timeout(self.0.opts.command_timeout, answer).await {
+            // The hub deadline fired: the follow-up re-sends the order later if
+            // the state does not confirm it, as for every driver. Only an
+            // unknown outcome stays ambiguous: a driver may report it
+            // explicitly, or its reply channel closed after queueing, in which
+            // case whether the device acted cannot be established.
             Err(_) => Err(CommandError::Timeout),
-            Ok(Err(_)) => Err(CommandError::Driver("command dropped".into())),
-            Ok(Ok(result)) => result.map_err(CommandError::Driver),
+            Ok(Err(_)) => Err(CommandError::OutcomeUnknown),
+            Ok(Ok(crate::driver::CommandReply::OutcomeUnknown)) => {
+                Err(CommandError::OutcomeUnknown)
+            }
+            Ok(Ok(crate::driver::CommandReply::Refused(reason))) => {
+                Err(CommandError::DriverRefused(reason))
+            }
+            Ok(Ok(crate::driver::CommandReply::Finished(result))) => {
+                result.map_err(CommandError::Driver)
+            }
         }
     }
 
@@ -1548,6 +2074,65 @@ impl Hub {
         self.0.secrets.is_some()
     }
 
+    /// Private cached data and durable request slots, scoped to one instance.
+    /// An invalid private file disables only these handles, never the vault.
+    #[must_use]
+    pub fn private_state(&self, instance: &InstanceId) -> Option<crate::PrivateState> {
+        crate::PrivateState::new(self.0.secrets.as_deref()?.clone(), instance.to_string())
+    }
+
+    /// Owner cleanup of retained private data, even if its cache is unreadable.
+    /// `false` means credentials are retired durably but cached data still needs
+    /// repair; the retained cleanup marker makes the instance discoverable.
+    pub async fn purge_private_state(
+        &self,
+        instance: &InstanceId,
+        names: Vec<String>,
+    ) -> std::io::Result<bool> {
+        let store = self
+            .0
+            .secrets
+            .as_deref()
+            .ok_or_else(|| std::io::Error::other("no secret store"))?;
+        crate::private_state_handle::purge_retained(store.clone(), instance.to_string(), names)
+            .await
+    }
+
+    /// Instances retaining one of the caller's exact private names. Values never
+    /// leave the scoped accessors; this also finds removed driver configurations.
+    #[must_use]
+    pub fn private_instances(&self, names: &[&str]) -> Vec<InstanceId> {
+        let Some(store) = &self.0.secrets else {
+            return vec![];
+        };
+        let mut instances = std::collections::BTreeSet::new();
+        for key in store
+            .0
+            .values
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+        {
+            if let Some((instance, name)) = key.split_once('/')
+                && names.contains(&name)
+            {
+                instances.insert(InstanceId::from(instance));
+            }
+        }
+        if let Some(private) = &store.0.private {
+            for instance in private.instances() {
+                let instance = InstanceId::from(instance.as_str());
+                if self
+                    .private_state(&instance)
+                    .is_some_and(|state| names.iter().any(|name| state.get(name).is_some()))
+                {
+                    instances.insert(instance);
+                }
+            }
+        }
+        instances.into_iter().collect()
+    }
+
     pub(crate) fn durable_secrets(&self, instance: &InstanceId) -> Option<secrets::DurableSecrets> {
         Some(secrets::DurableSecrets::new(
             self.0.secrets.as_ref()?.clone(),
@@ -1592,6 +2177,75 @@ impl Hub {
         store.set(&format!("{instance}/{name}"), value).await
     }
 
+    /// Atomically queues one encrypted value; false means an existing slot is busy.
+    /// Serialized with other writers, including separate processes.
+    pub async fn insert_secret_if_absent(
+        &self,
+        instance: &InstanceId,
+        name: &str,
+        value: &str,
+    ) -> std::io::Result<bool> {
+        self.0
+            .secrets
+            .as_ref()
+            .ok_or_else(|| {
+                std::io::Error::other("no secret store: MOLI_MASTER_KEY is not configured")
+            })?
+            .insert_if_absent(&format!("{instance}/{name}"), value)
+            .await
+    }
+
+    /// Consumes an instance-scoped value only after its encrypted deletion commits.
+    pub async fn take_secret(
+        &self,
+        instance: &InstanceId,
+        name: &str,
+    ) -> std::io::Result<Option<String>> {
+        self.0
+            .secrets
+            .as_ref()
+            .ok_or_else(|| {
+                std::io::Error::other("no secret store: MOLI_MASTER_KEY is not configured")
+            })?
+            .take(&format!("{instance}/{name}"))
+            .await
+    }
+
+    pub(crate) fn store_secrets_job(
+        &self,
+        instance: &InstanceId,
+        values: Vec<(String, String)>,
+    ) -> tokio::task::JoinHandle<std::io::Result<()>> {
+        let store = self.0.secrets.clone();
+        let instance = instance.clone();
+        tokio::spawn(async move {
+            let store = store.ok_or_else(|| {
+                std::io::Error::other("no secret store: MOLI_MASTER_KEY is not configured")
+            })?;
+            for (name, value) in values {
+                store.set(&format!("{instance}/{name}"), &value).await?;
+            }
+            Ok(())
+        })
+    }
+
+    pub(crate) fn take_secret_job(
+        &self,
+        instance: &InstanceId,
+        name: &str,
+    ) -> tokio::task::JoinHandle<std::io::Result<Option<String>>> {
+        let store = self.0.secrets.clone();
+        let key = format!("{instance}/{name}");
+        tokio::spawn(async move {
+            store
+                .ok_or_else(|| {
+                    std::io::Error::other("no secret store: MOLI_MASTER_KEY is not configured")
+                })?
+                .take(&key)
+                .await
+        })
+    }
+
     // ---- writing (drivers, via DriverCtx) -----------------------------------
 
     pub(crate) fn register_driver(
@@ -1599,6 +2253,7 @@ impl Hub {
         instance: &InstanceId,
         kind: &'static str,
         integration: Arc<str>,
+        inside: bool,
     ) -> mpsc::Receiver<CommandRequest> {
         let (commands, rx) = mpsc::channel(COMMAND_QUEUE);
         let restored = {
@@ -1611,6 +2266,7 @@ impl Hub {
                     status: DriverStatus::Starting,
                     warning: None,
                     commands,
+                    inside,
                 },
             );
             let foreign: Vec<_> = model
@@ -1629,6 +2285,7 @@ impl Hub {
                     model.availability.remove(&id);
                     model.unconfirmed.remove(&id);
                     model.awaiting_samples.remove(&id);
+                    model.told.remove(&id);
                     model.held_offline.remove(&id);
                     restored.push(Event::DeviceRemoved { device: id });
                 }
@@ -1682,6 +2339,54 @@ impl Hub {
             self.emit(event);
         }
         rx
+    }
+
+    /// Detaches an already stopped driver. Call only after cancelling and
+    /// awaiting its task: an old task must not publish over a replacement.
+    /// Labels, history and original cached definitions are retained.
+    pub fn unregister_driver(&self, instance: &InstanceId) {
+        let devices = {
+            let mut model = self.write();
+            if model.drivers.remove(instance).is_none() {
+                return;
+            }
+            let mut devices: Vec<_> = model
+                .devices
+                .values()
+                .filter(|device| &device.instance == instance)
+                .map(|device| (**device).clone())
+                .collect();
+            for device in &mut devices {
+                let states = model.states.get(&device.id).cloned().unwrap_or_default();
+                if let Some(cached) = model.cached_devices.get_mut(&device.id) {
+                    cached.states = states;
+                }
+                for point in &mut device.points {
+                    point.access.write = false;
+                }
+                model
+                    .devices
+                    .insert(device.id.clone(), Arc::new(device.clone()));
+                model.availability.insert(device.id.clone(), false);
+                model.unconfirmed.insert(device.id.clone(), false);
+                model.held_offline.remove(&device.id);
+                model.snapshots.remove(&device.id);
+                model.printers.remove(&device.id);
+            }
+            devices
+        };
+        for device in devices {
+            self.emit(Event::Availability {
+                device: device.id.clone(),
+                online: false,
+            });
+            self.emit(Event::DeviceUpserted {
+                device: Arc::new(device),
+            });
+        }
+        self.emit(Event::DriverUnregistered {
+            instance: instance.clone(),
+        });
     }
 
     pub(crate) fn set_driver_status(&self, instance: &InstanceId, status: DriverStatus) {
@@ -1913,11 +2618,13 @@ impl Hub {
             let cached_removed = model.cached_devices.remove(id).is_some();
             model.unconfirmed.remove(id);
             model.awaiting_samples.remove(id);
+            model.told.remove(id);
             model.held_offline.remove(id);
             model.availability.remove(id);
             model.snapshots.remove(id);
             model.printers.remove(id);
             model.lives.remove(id);
+            model.reviews.remove(id);
             let removed = model.devices.remove(id).is_some();
             if states_removed || restored_removed || cached_removed || removed {
                 self.0.state_dirty.store(true, Ordering::Release);
@@ -1943,6 +2650,20 @@ impl Hub {
         source: Arc<dyn crate::media::SnapshotSource>,
     ) {
         self.write().snapshots.insert(device.clone(), source);
+    }
+
+    pub(crate) fn provide_review(
+        &self,
+        device: &DeviceId,
+        source: Arc<dyn crate::media::ReviewSource>,
+    ) {
+        self.write().reviews.insert(device.clone(), source);
+    }
+
+    /// The device's past, from its NVR (called without the model lock).
+    #[must_use]
+    pub fn review_source(&self, device: &DeviceId) -> Option<Arc<dyn crate::media::ReviewSource>> {
+        self.read().reviews.get(device).cloned()
     }
 
     pub(crate) fn provide_live(
@@ -2111,17 +2832,31 @@ impl Hub {
     /// Records a value. Unknown devices/points are ignored (the model only
     /// holds what drivers declared). Only actual changes are broadcast.
     pub(crate) fn set_state(&self, device: &DeviceId, key: &str, value: Value) {
-        self.record_state(device, key, value, false);
+        self.record_state(device, key, value, false, None);
+    }
+
+    /// Like `set_state`, but the value keeps the time it was read at, not
+    /// the time it is recorded: a value copied from another device (the
+    /// « Dehors » weather) is as old as its source's reading.
+    pub(crate) fn set_state_at(&self, device: &DeviceId, key: &str, value: Value, ts: u64) {
+        self.record_state(device, key, value, false, Some(ts));
     }
 
     /// Like `set_state`, but always broadcast: for points that are
     /// occurrences (button presses), where the same value twice is two events.
     pub(crate) fn pulse_state(&self, device: &DeviceId, key: &str, value: Value) {
-        self.record_state(device, key, value, true);
+        self.record_state(device, key, value, true, None);
     }
 
-    fn record_state(&self, device: &DeviceId, key: &str, value: Value, always: bool) {
-        let ts = now_ms();
+    fn record_state(
+        &self,
+        device: &DeviceId,
+        key: &str,
+        value: Value,
+        always: bool,
+        at: Option<u64>,
+    ) {
+        let ts = at.unwrap_or_else(now_ms);
         let event = {
             let mut model = self.write();
             let Some(spec) = model.devices.get(device).and_then(|d| d.point(key)) else {
@@ -2134,7 +2869,16 @@ impl Hub {
                 .get_mut(device)
                 .is_some_and(|keys| keys.remove(&key));
             let states = model.states.entry(device.clone()).or_default();
-            let changed = always || first_live || states.get(&key).is_none_or(|s| s.value != value);
+            let before = states.get(&key).map(|s| s.ts);
+            // A copied value whose reading got older (another source's, kept
+            // as the last known) is a change: its age goes back. A newer
+            // reading of the same value is only a `Seen` (#230), like any
+            // value read again.
+            let changed = always
+                || first_live
+                || states
+                    .get(&key)
+                    .is_none_or(|s| s.value != value || (at.is_some() && ts < s.ts));
             states.insert(
                 key.clone(),
                 Sample {
@@ -2142,12 +2886,25 @@ impl Hub {
                     ts,
                 },
             );
-            changed.then(|| Event::State {
-                point: PointId::new(device, &key),
-                value,
-                ts,
-                pulse: always,
-            })
+            let told = model.told.entry(device.clone()).or_default();
+            let point = PointId::new(device, &key);
+            match tell(changed, before, ts, told.get(&key).copied()) {
+                Tell::Change => {
+                    told.insert(key, ts);
+                    Some(Event::State {
+                        point,
+                        value,
+                        ts,
+                        pulse: always,
+                    })
+                }
+                // The same value, read again (#230): only its time moved.
+                Tell::Seen => {
+                    told.insert(key, ts);
+                    Some(Event::Seen { point, ts })
+                }
+                Tell::Nothing => None,
+            }
         };
         if let Some(event) = event {
             self.emit(event);
@@ -2265,6 +3022,7 @@ impl Model {
             camera: self.snapshots.contains_key(&device.id),
             printer: self.printers.contains_key(&device.id),
             live: self.lives.contains_key(&device.id),
+            review: self.reviews.contains_key(&device.id),
         }
     }
 }
@@ -2384,6 +3142,17 @@ mod opening_tests {
     use super::*;
     use moli_core::{Access, Kind, Semantic};
 
+    #[test]
+    fn uncertain_commands_are_not_automatically_retried() {
+        assert!(!transient(&CommandError::OutcomeUnknown));
+        assert!(!transient(&CommandError::DriverRefused(
+            "status failure".into()
+        )));
+        // The hub deadline is a plain transient: the follow-up re-sends the
+        // order when the state does not confirm it, as on main.
+        assert!(transient(&CommandError::Timeout));
+    }
+
     fn point(key: &str, semantic: Semantic, kind: Kind) -> PointSpec {
         PointSpec {
             key: key.into(),
@@ -2502,5 +3271,54 @@ mod opening_tests {
             Some(Semantic::OnOff),
             &Value::Bool(true)
         ));
+    }
+}
+
+#[cfg(test)]
+mod seen_tests {
+    use super::{SEEN_EVERY_MS, Tell, tell};
+
+    const T: u64 = 1_800_000_000_000;
+
+    #[test]
+    fn a_new_value_is_a_change_whatever_the_clock() {
+        assert_eq!(tell(true, Some(T), T, Some(T)), Tell::Change);
+        assert_eq!(tell(true, None, T, None), Tell::Change);
+    }
+
+    #[test]
+    fn the_same_value_read_again_is_told_once_per_window() {
+        // Told at T (a change); read again a minute later: nothing.
+        assert_eq!(tell(false, Some(T), T + 60_000, Some(T)), Tell::Nothing);
+        // Five minutes after it was last told: `Seen`.
+        assert_eq!(
+            tell(false, Some(T + 240_000), T + SEEN_EVERY_MS, Some(T)),
+            Tell::Seen
+        );
+        // Right after a `Seen` (told again at T + 5 min): nothing until the
+        // next window.
+        let seen = T + SEEN_EVERY_MS;
+        assert_eq!(
+            tell(false, Some(seen), seen + 60_000, Some(seen)),
+            Tell::Nothing
+        );
+        assert_eq!(
+            tell(false, Some(seen + 60_000), seen + SEEN_EVERY_MS, Some(seen)),
+            Tell::Seen
+        );
+    }
+
+    #[test]
+    fn a_reading_that_is_not_newer_tells_nothing() {
+        // The same time again, or an older one (a late report).
+        assert_eq!(tell(false, Some(T), T, None), Tell::Nothing);
+        assert_eq!(
+            tell(false, Some(T), T - 1, Some(T - SEEN_EVERY_MS)),
+            Tell::Nothing
+        );
+        // Never told (a restored value): the window starts at its reading.
+        assert_eq!(tell(false, Some(T), T + 60_000, None), Tell::Nothing);
+        assert_eq!(tell(false, Some(T), T + SEEN_EVERY_MS, None), Tell::Seen);
+        assert_eq!(tell(false, None, T, None), Tell::Nothing);
     }
 }

@@ -26,6 +26,13 @@ pub trait Driver: Send + Sync + 'static {
         Arc::from(self.kind())
     }
     fn run<'a>(&'a self, ctx: &'a mut DriverCtx) -> BoxFuture<'a, anyhow::Result<()>>;
+    /// Its orders change nothing outside Moli (the alarm's state, kept by
+    /// Moli itself): a mirror house lets them through, so the mirror runs
+    /// it in the shadow of the real house. What it then asks of real
+    /// devices is still stopped.
+    fn stays_inside(&self) -> bool {
+        false
+    }
 }
 
 /// A validated write addressed to a driver. The driver must answer through
@@ -41,7 +48,14 @@ pub struct CommandRequest {
     /// When the hub stopped waiting: an order past it must never run (a
     /// lamp switched on hours after « failed » is worse than a refusal).
     pub deadline: Instant,
-    pub(crate) reply: oneshot::Sender<Result<(), String>>,
+    pub(crate) reply: oneshot::Sender<CommandReply>,
+}
+
+#[derive(Debug)]
+pub(crate) enum CommandReply {
+    Finished(Result<(), String>),
+    Refused(String),
+    OutcomeUnknown,
 }
 
 impl CommandRequest {
@@ -51,10 +65,26 @@ impl CommandRequest {
         self.reply.is_closed() || Instant::now() >= self.deadline
     }
 
+    /// Resolves when the caller no longer waits for this command.
+    pub async fn cancelled(&mut self) {
+        self.reply.closed().await;
+    }
+
     /// Reports the outcome. Dropping the request without replying is
     /// reported to the caller as a driver failure.
     pub fn reply(self, result: Result<(), String>) {
-        let _ = self.reply.send(result);
+        let _ = self.reply.send(CommandReply::Finished(result));
+    }
+
+    /// Reports that the command may have reached the device, but its result
+    /// could not be confirmed. The hub must not automatically resend it.
+    pub fn reply_outcome_unknown(self) {
+        let _ = self.reply.send(CommandReply::OutcomeUnknown);
+    }
+
+    /// Reports a definite refusal or a non-retryable driver failure.
+    pub fn reply_refused(self, reason: String) {
+        let _ = self.reply.send(CommandReply::Refused(reason));
     }
 }
 
@@ -136,6 +166,12 @@ impl DriverCtx {
         self.hub.durable_secrets(&self.instance)
     }
 
+    /// Instance-scoped cached data, separate from credential checkpoints.
+    #[must_use]
+    pub fn private_state(&self) -> Option<crate::PrivateState> {
+        self.hub.private_state(&self.instance)
+    }
+
     /// A secret previously stored by this instance.
     #[must_use]
     pub fn secret(&self, name: &str) -> Option<String> {
@@ -145,6 +181,38 @@ impl DriverCtx {
     /// Persists a secret for this instance (encrypted at rest).
     pub async fn store_secret(&self, name: &str, value: &str) -> std::io::Result<()> {
         self.hub.store_secret(&self.instance, name, value).await
+    }
+
+    /// Atomically fills an empty encrypted slot belonging to this instance.
+    pub async fn insert_secret_if_absent(&self, name: &str, value: &str) -> std::io::Result<bool> {
+        self.hub
+            .insert_secret_if_absent(&self.instance, name, value)
+            .await
+    }
+
+    /// Durably consumes one encrypted input belonging to this instance.
+    pub async fn take_secret(&self, name: &str) -> std::io::Result<Option<String>> {
+        self.hub.take_secret(&self.instance, name).await
+    }
+
+    /// Starts sequential scoped writes without retaining a borrow of the controller.
+    /// The caller must track and abort/join the job. This is not a multi-key transaction;
+    /// cancelling stops later writes, while an already started transaction completes.
+    #[must_use]
+    pub fn store_secrets_job(
+        &self,
+        values: Vec<(String, String)>,
+    ) -> tokio::task::JoinHandle<std::io::Result<()>> {
+        self.hub.store_secrets_job(&self.instance, values)
+    }
+
+    /// Starts a scoped durable consume. The caller must track the job to completion.
+    #[must_use]
+    pub fn take_secret_job(
+        &self,
+        name: &str,
+    ) -> tokio::task::JoinHandle<std::io::Result<Option<String>>> {
+        self.hub.take_secret_job(&self.instance, name)
     }
 
     /// Deletes a secret of this instance (revoked key…).
@@ -204,6 +272,14 @@ impl DriverCtx {
     pub fn provide_live(&self, device: &DeviceId, source: Arc<dyn crate::media::LiveSource>) {
         if self.owns(device) {
             self.hub.provide_live(device, source);
+        }
+    }
+
+    /// Declares that `device` (one of ours) has a past to review (events,
+    /// recordings, zones), from its NVR.
+    pub fn provide_review(&self, device: &DeviceId, source: Arc<dyn crate::media::ReviewSource>) {
+        if self.owns(device) {
+            self.hub.provide_review(device, source);
         }
     }
 
@@ -267,10 +343,62 @@ impl DriverCtx {
             .map(|sample| sample.value)
     }
 
+    /// Whether one of this instance's points still awaits its first sample
+    /// of this run: a restored value is not usable until the driver confirms
+    /// it (a live reading, or a value read from the gateway's snapshot).
+    #[must_use]
+    pub fn is_awaiting(&self, device: &DeviceId, key: &str) -> bool {
+        if !self.owns(device) {
+            return false;
+        }
+        self.hub.is_awaiting(device, key)
+    }
+
+    /// Every change in the house (states, devices, availability), to follow
+    /// other devices: read-only, the driver still acts on its own only.
+    /// The whole house, so for trusted drivers: compiled into Moli and
+    /// reviewed like the rest of it (the alarm), never a plug-in.
+    #[must_use]
+    pub fn watch(&self) -> tokio::sync::broadcast::Receiver<moli_core::Event> {
+        self.hub.subscribe()
+    }
+
+    /// The last value of any point of the house, with its time (trusted
+    /// drivers only, as [`DriverCtx::watch`]).
+    #[must_use]
+    pub fn read(&self, point: &PointId) -> Option<moli_core::Sample> {
+        self.hub.state(point)
+    }
+
+    /// Whether a point of the house is there to be read (its device known,
+    /// with this point, not offline).
+    #[must_use]
+    pub fn answers(&self, point: &PointId) -> bool {
+        self.hub.answers(point)
+    }
+
+    /// What people call a device (its name in Moli), if the house has it.
+    #[must_use]
+    pub fn name_of(&self, device: &DeviceId) -> Option<String> {
+        self.hub
+            .describe(device)
+            .map(|(d, label)| label.name.unwrap_or_else(|| d.native_name.to_string()))
+    }
+
     /// Records a value for a point of one of this instance's devices.
     pub fn set_state(&self, device: &DeviceId, key: &str, value: Value) {
         if self.owns(device) {
             self.hub.set_state(device, key, value);
+        }
+    }
+
+    /// Records a value read at `ts` (ms since the epoch), not now: for a
+    /// value copied from another device's reading, whose age it keeps. A
+    /// newer reading of the same value is no change (only a `Seen`, #230);
+    /// an older one is (the age goes back).
+    pub fn set_state_at(&self, device: &DeviceId, key: &str, value: Value, ts: u64) {
+        if self.owns(device) {
+            self.hub.set_state_at(device, key, value, ts);
         }
     }
 
@@ -337,5 +465,67 @@ impl MediaPublisher {
             from: Some(from.to_owned()),
             ts: moli_core::now_ms(),
         });
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn caller_disappearance_drops_in_flight_operation() {
+        // A pending library operation must be dropped, not just left running.
+        struct Pending(Option<oneshot::Sender<()>>);
+        impl Drop for Pending {
+            fn drop(&mut self) {
+                let _ = self.0.take().unwrap().send(());
+            }
+        }
+
+        let (reply, receiver) = oneshot::channel();
+        let (tx, mut rx) = mpsc::channel(1);
+        let id: DeviceId = "synthetic:device".into();
+        tx.send(CommandRequest {
+            point: PointId::new(&id, "on"),
+            device: Arc::new(Device {
+                id,
+                instance: "synthetic".into(),
+                native_name: "Synthetic".into(),
+                manufacturer: None,
+                model: None,
+                description: None,
+                native_room: None,
+                members: vec![],
+                points: vec![],
+            }),
+            key: "on".into(),
+            value: Value::Bool(true),
+            deadline: Instant::now() + std::time::Duration::from_secs(60),
+            reply,
+        })
+        .await
+        .unwrap();
+        let mut command = rx.recv().await.unwrap();
+        let (dropped, observed) = oneshot::channel();
+        let guard = Pending(Some(dropped));
+        let operation = async move {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        };
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), command.cancelled())
+                .await
+                .is_err()
+        );
+        drop(receiver);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::select! {
+                () = command.cancelled() => {},
+                () = operation => panic!("operation unexpectedly completed"),
+            }
+            observed.await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 }
