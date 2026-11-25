@@ -10,10 +10,23 @@
     <string name="stop">Arrêter</string>
     <string name="open_dashboard">Ouvrir Moli</string>
     <string name="integrations">Intégrations</string>
-    <string name="integrations_empty">Aucune intégration à configurer pour l\'instant.</string>
     <string name="pin_title">Code de la maison</string>
     <string name="pin_message">6 à 8 chiffres. Le tableau de bord le demande pour valider ce qui engage la maison.</string>
     <string name="pin_invalid">6 à 8 chiffres</string>
     <string name="key_failed">La clé protégée est illisible.</string>
     <string name="service_running">Moli tourne sur cette tablette.</string>
+    <string name="backup">Sauvegarder la maison</string>
+    <string name="backup_done">Sauvegarde enregistrée.</string>
+    <string name="backup_failed">La sauvegarde a échoué : rien n’a changé.</string>
+    <string name="restore">Restaurer une sauvegarde</string>
+    <string name="restore_message">La sauvegarde ne contient pas la clé : collez la clé maître gardée avec elle, et le code de la maison. L’ancienne configuration est mise de côté, pas effacée.</string>
+    <string name="restore_key_field">Clé maître (64 caractères)</string>
+    <string name="restore_key_invalid">64 caractères, chiffres et lettres de a à f</string>
+    <string name="restore_done">Maison restaurée : Moli redémarre.</string>
+    <string name="restore_failed">La restauration a échoué : la maison n’a pas changé.</string>
+    <string name="key_title">Clé maître et code</string>
+    <string name="key_message">À garder ailleurs (NordPass) : sans la clé maître, une sauvegarde est illisible.</string>
+    <string name="key_master">Clé maître :</string>
+    <string name="key_copy">Copier la clé</string>
+    <string name="key_copied">Clé copiée.</string>
 </resources>

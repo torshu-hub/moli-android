@@ -34,6 +34,7 @@ pub use whereabouts::INSTANCE as PEOPLE_INSTANCE;
 pub mod airzone_setup;
 mod appli;
 pub mod device_setup;
+pub mod integration_setup;
 mod outside;
 mod phones;
 mod plan;
@@ -111,6 +112,8 @@ pub struct Options {
     pub airzone_setup: Option<Arc<dyn airzone_setup::AirzoneSetup>>,
     /// A device added by its address from the dashboard, owned by the executable.
     pub device_setup: Option<Arc<dyn device_setup::DeviceSetup>>,
+    /// Integrations set up from the dashboard, owned by the executable.
+    pub integration_setup: Option<Arc<dyn integration_setup::IntegrationSetup>>,
     /// Host names (or IPs) this instance is reached by, besides localhost.
     pub allowed_hosts: Vec<String>,
     /// PIN that opens a human session in the dashboard. `None`: nobody is
@@ -388,8 +391,24 @@ fn integration_routes(humans: &Arc<session::Sessions>, options: &Options) -> Rou
             "/api/integrations/devices",
             upload(post(device_setup::install), 2048, humans),
         )
+        .route(
+            "/api/integrations/catalogue",
+            get(integration_setup::catalogue),
+        )
+        .route(
+            "/api/integrations/installed",
+            upload(post(integration_setup::add), 65_536, humans).get(integration_setup::installed),
+        )
+        .route(
+            "/api/integrations/installed/{instance}",
+            upload(put(integration_setup::replace), 65_536, humans)
+                .delete(integration_setup::remove),
+        )
         .merge(overkiz::routes())
         .layer(Extension(device_setup::Setup(options.device_setup.clone())))
+        .layer(Extension(integration_setup::Setup(
+            options.integration_setup.clone(),
+        )))
         .layer(Extension(airzone_setup::Setup(
             options.airzone_setup.clone(),
         )))
