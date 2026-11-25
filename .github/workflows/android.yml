@@ -128,8 +128,10 @@ jobs:
           tools="$ANDROID_HOME/build-tools/35.0.0"
           test -x "$tools/apksigner" || "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;35.0.0" > /dev/null
           mkdir -p out
-          "$tools/apksigner" sign --ks "$RUNNER_TEMP/key.p12" --ks-type PKCS12 \
-            --ks-pass "file:$RUNNER_TEMP/key.pass" --key-pass "file:$RUNNER_TEMP/key.pass" \
+          # One password for the store and the key: given twice from the same
+          # file, apksigner would read a second, empty line for the key.
+          KS_PASS="$(cat "$RUNNER_TEMP/key.pass")" "$tools/apksigner" sign --ks "$RUNNER_TEMP/key.p12" --ks-type PKCS12 \
+            --ks-pass env:KS_PASS --key-pass env:KS_PASS \
             --out out/moli.apk in/moli-unsigned.apk
           rm -f "$RUNNER_TEMP/key.p12" "$RUNNER_TEMP/key.pass"
           cert=$("$tools/apksigner" verify --print-certs out/moli.apk | sed -n 's/.*certificate SHA-256 digest: //p')
