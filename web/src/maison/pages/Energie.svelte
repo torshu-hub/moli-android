@@ -3,13 +3,16 @@
   import { home, hub, value, isOn, nameOf, deviceKind, doorOpen, act } from '../lib/home.svelte.js';
   import { isValve } from '../lib/capabilities.js';
   import { energy, useEnergy, euros, kwh, watts, power, liveLook, billOf } from '../lib/energy-live.svelte.js';
-  import { offPeak, nextChange, clockText, minutesText, windowText, baseload, typicalDay, todayByHour, prices, advise } from '../lib/energy-advice.js';
-  import { t } from '../../lib/i18n.svelte.js';
+  import { offPeak, nextChange, clockText, minutesText, windowText, baseload, prices, advise } from '../lib/energy-advice.js';
+  import { t, locale } from '../../lib/i18n.svelte.js';
   import Icon from '../ui/Icon.svelte';
   import EnergyChart from '../ui/EnergyChart.svelte';
   import TariffPie from '../ui/TariffPie.svelte';
-  import DayProfile from '../ui/DayProfile.svelte';
   import HousePrice from '../ui/HousePrice.svelte';
+  import EnergyFlow from '../ui/EnergyFlow.svelte';
+  import DayEnergy from '../ui/DayEnergy.svelte';
+  import { batteryNow } from '../lib/battery.js';
+  import { yearOverYear, trendTone } from '../lib/year-compare.js';
 
   onMount(useEnergy);
 
@@ -39,6 +42,9 @@
     const v = hub.devices[point.slice(0, i)]?.state?.[point.slice(i + 1)]?.value;
     return typeof v === 'number' ? v : (fallback ?? null);
   };
+
+  // The home battery: its charge and power read live from their points.
+  const battery = $derived(batteryNow(s, (point) => livePower(point)));
 
   const total = $derived(s?.meters.find((m) => m.role === 'total'));
   const now = $derived(total ? livePower(total.power, total.power_w) : null);
@@ -161,6 +167,24 @@
       /* next round */
     }
   }
+  // This month against the same days a year ago (lib/year-compare.js):
+  // the daily series, read once an hour (only whole days count).
+  let days = $state(null);
+  async function loadDays() {
+    try {
+      const r = await fetch('/api/energy/series?step=day&count=400');
+      days = r.ok ? await r.json() : null;
+    } catch {
+      /* next round */
+    }
+  }
+  const yearBought = $derived(yearOverYear(days, home.now, 'bought'));
+  const monthName = (d) => d.toLocaleDateString(locale(), { month: 'short', year: 'numeric' });
+  onMount(() => {
+    loadDays();
+    const every = setInterval(loadDays, 60 * 60_000);
+    return () => clearInterval(every);
+  });
   onMount(() => {
     // Every 10 minutes: today's hours fill in as they go.
     const timer = setInterval(learn, 10 * 60_000);
@@ -176,8 +200,6 @@
 
   const windows = $derived(offPeak(tariff, home.now));
   const change = $derived(nextChange(windows, home.now));
-  const profile = $derived(typicalDay(week));
-  const todayHours = $derived(todayByHour(week, home.now));
   const base = $derived(baseload(week));
   const price = $derived(prices(s));
 
@@ -263,7 +285,7 @@
         <div class="row">
           <b class="num">{euros(s.today.total.cost, cur)}</b>
           {#if vsYesterday != null}
-            <span class="chip {vsYesterday > 10 ? 'warm' : vsYesterday < -10 ? 'good' : ''}">
+            <span class="chip {trendTone(vsYesterday)}">
               {t('energie.vs_hier', { n: `${vsYesterday > 0 ? '+' : ''}${vsYesterday}` })}
             </span>
           {/if}
@@ -283,7 +305,13 @@
               {/if}
             </span>
           {/if}
-          {#if monthDelta != null}<span class="chip {monthDelta > 5 ? 'warm' : monthDelta < -5 ? 'good' : ''}">{t('energie.mois.vs', { n: `${monthDelta > 0 ? '+' : ''}${monthDelta}` })}</span>{/if}
+          {#if monthDelta != null}<span class="chip {trendTone(monthDelta)}">{t('energie.mois.vs', { n: `${monthDelta > 0 ? '+' : ''}${monthDelta}` })}</span>{/if}
+          {#if yearBought}
+            <span
+              class="chip {trendTone(yearBought.pct)}"
+              title={t('energie.mois.vs_an_aide', { jours: yearBought.days, avant: kwh(yearBought.before), maintenant: kwh(yearBought.now) })}
+            >{t('energie.mois.vs_an', { n: `${yearBought.pct > 0 ? '+' : ''}${yearBought.pct}`, mois: monthName(yearBought.month) })}</span>
+          {/if}
           {#if offShare != null}<span class="muted small">{t('energie.mois.creuses', { n: offShare })}</span>{/if}
         </div>
         {#if typeof budget === 'number'}
@@ -306,7 +334,55 @@
         {/if}
       </section>
 
+      {#if battery}
+        <section class="card battery">
+          <span class="eyebrow">{t('energie.batterie.titre')}</span>
+          <strong class="big num">{battery.soc == null ? '—' : `${Math.round(battery.soc)} %`}</strong>
+          {#if battery.soc != null}
+            <div class="bar {battery.tone}" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(battery.soc)} aria-label={t('energie.batterie.charge_pct')}>
+              <span style:width="{battery.soc}%"></span>
+            </div>
+          {/if}
+          <div class="row">
+            {#if battery.state}
+              <span class="state {battery.state} small">{t(`energie.batterie.${battery.state}`, { w: watts(Math.abs(battery.power)) })}</span>
+            {/if}
+            {#if battery.stored != null}
+              <span class="muted small num">{t('energie.batterie.stocke', { kwh: kwh(battery.stored), total: kwh(battery.capacity) })}</span>
+            {/if}
+          </div>
+          {#if battery.charged != null || battery.discharged != null}
+            <span class="muted small num">{t('energie.batterie.aujourdhui', { entre: kwh(battery.charged), sorti: kwh(battery.discharged) })}</span>
+          {/if}
+        </section>
+      {/if}
+
+      {#if s.month.gas}
+        <section class="card">
+          <span class="eyebrow">{t('energie.gaz.titre')}</span>
+          <strong class="big num">{euros(s.month.gas.cost, cur)}</strong>
+          <div class="row">
+            <span class="muted num small">{t('energie.gaz.detail', { kwh: kwh(s.month.gas.kwh), today: euros(s.today.gas?.cost, cur) })}</span>
+          </div>
+        </section>
+      {/if}
+
     </div>
+
+    <EnergyFlow />
+
+    <!-- The day hour by hour: used, from the sun, bought, the usual day, and
+         with panels what they made against the forecast (solcast driver). -->
+    {#if week}
+      <DayEnergy
+        {week}
+        {windows}
+        {base}
+        cost={s.today.total.cost}
+        currency={cur}
+        foot={windows.length ? t('energie.journee.creuses', { windows: windows.map(windowText).join(t('energie.et')) }) : ''}
+      />
+    {/if}
 
     {#if tips.length}
       <section class="card tips">
@@ -384,17 +460,8 @@
       </section>
     </div>
 
-    <TariffPie {windows} />
-
-    {#if profile}
-      <section class="card">
-        <div class="card-head"><h2><Icon name="clock" size={18} />{t('energie.journee.titre')}</h2></div>
-        <DayProfile {profile} {windows} {base} today={todayHours} now={home.now} />
-        {#if windows.length}
-          <p class="foot muted">{t('energie.journee.creuses', { windows: windows.map(windowText).join(t('energie.et')) })}</p>
-        {/if}
-      </section>
-    {/if}
+    <!-- Peak and off-peak only for a house with such a tariff ([energy.tariff]). -->
+    {#if s?.period_point}<TariffPie {windows} />{/if}
 
     <section class="card">
       <div class="card-head">
@@ -587,6 +654,35 @@
 
   .budget.over .bar span {
     background: var(--alert);
+  }
+
+  /* The battery's charge: green, orange under 40 %, red under 20 %. */
+  .battery .bar {
+    margin-bottom: 10px;
+  }
+
+  .battery .bar.mid span {
+    background: var(--warm);
+  }
+
+  .battery .bar.low span {
+    background: var(--alert);
+  }
+
+  .battery .state {
+    font-weight: 650;
+  }
+
+  .battery .state.charge {
+    color: var(--good);
+  }
+
+  .battery .state.decharge {
+    color: var(--warm);
+  }
+
+  .battery .state.repos {
+    color: var(--ink-3);
   }
 
   .budget.over .small.num {

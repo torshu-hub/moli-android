@@ -3,7 +3,8 @@
 # (from the test's own machine, so "household"). The model behind it: docs/SECURITY-MODEL.md.
 #
 # Level:
-#   public  a stranger (Internet, no proof) is let through: sign-in and invitation only.
+#   public  a stranger (Internet, no proof) is let through: sign-in, invitation and the app's
+#           sign-in handoff (its one-time code and secret are the proof) only.
 #   foyer   a stranger is refused (403); the household's devices may call it.
 #   humain  as foyer, and the household too is refused (403) without a person signed in with the
 #           house's code (some of these also need an owner).
@@ -19,6 +20,10 @@ GET    /api/devices                        foyer   oui
 GET    /api/devices/{id}                   foyer   oui
 GET    /api/devices/{id}/snapshot          foyer   oui
 POST   /api/devices/{id}/live              foyer   oui   # same rules as the snapshot, checked after the body
+GET    /api/devices/{id}/review            foyer   non   # same rules as the snapshot; at home only (the past, clips the most)
+GET    /api/devices/{id}/review/zones      foyer   non   # same rules as the snapshot; at home only (the past, clips the most)
+GET    /api/devices/{id}/review/events/{event}/{what}  foyer   non   # same rules as the snapshot; at home only (the past, clips the most)
+GET    /api/devices/{id}/review/recording  foyer   non   # same rules as the snapshot; at home only (the past, clips the most)
 POST   /api/devices/{id}/print             humain  oui
 PUT    /api/devices/{id}/visibility        foyer   oui   # origin ui (a person) checked after the body
 GET    /api/infra                          foyer   non
@@ -28,11 +33,30 @@ POST   /api/plan/images                    humain  oui
 GET    /api/plan/images/{name}             foyer   oui
 POST   /api/mobile/register                foyer   oui
 POST   /api/phones/{id}/report             foyer   oui   # a phone's own token lets it through (checked by the route)
+GET    /api/phones/{id}/app                foyer   oui   # the app's update: the phone's own token (appli.rs)
+GET    /api/phones/{id}/app.apk            foyer   oui   # the app's file: the phone's own token
+POST   /api/phones/handoff                 public  oui   # Google sign-in in the app: one-time code + secret (PKCE)
+GET    /api/mobile/handoff                 foyer   oui   # a person Access just signed in (checked by the route)
 GET    /api/mobile/phones                  foyer   oui
 PUT    /api/mobile/phones/{id}             foyer   oui
 DELETE /api/phones/{id}                    foyer   oui
+GET    /api/integrations/airzone                                 humain non
+POST   /api/integrations/airzone/discover                        humain non
+POST   /api/integrations/airzone/probe                           humain non
+POST   /api/integrations/airzone                                 humain non
+POST   /api/integrations/airzone/{instance}/probe                humain non
+PUT    /api/integrations/airzone/{instance}                      humain non
+POST   /api/integrations/airzone/{instance}/withdraw             humain non
+POST   /api/integrations/airzone/{instance}/mode                 humain non
+POST   /api/integrations/devices/probe                           humain non
+POST   /api/integrations/devices                                 humain non
 GET    /api/integrations/tuya-cloud        foyer   non
 PUT    /api/integrations/tuya-cloud        foyer   non
+GET    /api/integrations/overkiz-cloud     humain  non  # owner: independent cloud session status
+DELETE /api/integrations/overkiz-cloud/{instance} humain non # owner: purge one cloud account even after configuration removal
+GET    /api/integrations/overkiz-cloud/{instance}/catalog humain  non  # owner: cached private catalogue
+GET    /api/integrations/overkiz-cloud/{instance}/definitions/{collection}/{index} humain  non  # owner: cached definitions
+POST   /api/integrations/overkiz-cloud/{instance}/requests humain  non  # owner: bounded observation/session requests
 PUT    /api/session/pin                    foyer   oui
 GET    /api/people                         foyer   oui
 POST   /api/people                         foyer   oui
@@ -72,6 +96,7 @@ POST   /api/command                        foyer   oui
 GET    /api/ambiances                      foyer   oui
 POST   /api/ambiance                       foyer   oui
 PUT    /api/labels/{id}                    foyer   oui
+PUT    /api/labels/{id}/points/{key}       foyer   oui
 GET    /api/journal                        foyer   oui
 GET    /api/approvals                      foyer   oui
 POST   /api/approvals/{id}                 foyer   oui
@@ -84,6 +109,7 @@ GET    /api/home                           foyer   oui
 GET    /api/system                         foyer   oui
 GET    /api/energy                         foyer   oui
 PUT    /api/energy/price                   foyer   oui   # a person (code) or an owner, checked after the body
+PUT    /api/energy/prices                  foyer   oui   # a person (code) or an owner, checked after the body
 GET    /api/energy/series                  foyer   oui
 GET    /api/automations                    foyer   oui
 POST   /api/automations                    foyer   oui
@@ -105,3 +131,4 @@ GET    /api/weather/forecast               foyer   oui
 GET    /api/weather/map                    foyer   oui
 GET    /api/weather/land/{z}/{x}/{y}       foyer   oui
 POST   /mcp                                foyer   non
+POST   /mcp/readonly                       foyer   non  # reads only: the 3 writing tools are switched off

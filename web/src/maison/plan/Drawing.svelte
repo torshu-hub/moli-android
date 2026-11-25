@@ -1,7 +1,8 @@
 <script>
-  import { hub, home, value, deviceKind, isOn, roomOf, num } from '../lib/home.svelte.js';
+  import { hub, home, value, deviceKind, isOn, roomOf, num, isPlant } from '../lib/home.svelte.js';
   import { area, bbox, inside, labelAt, points } from './geometry.js';
   import { t, locale } from '../../lib/i18n.svelte.js';
+  import { OUTSIDE } from '../lib/outside.js';
 
   /**
    * A drawn floor (cm): rooms, walls, openings, fixtures and the house's
@@ -229,7 +230,8 @@
   /** A probe's temperature now (an unreachable one says nothing). */
   function tempOf(id) {
     const d = id ? hub.devices[id] : null;
-    if (!d || d.online === false) return null;
+    // A plant sensor reads its pot's air, not the room's.
+    if (!d || d.online === false || isPlant(d)) return null;
     for (const key of ['temperature', 'temp_current', 'va_temperature']) {
       const v = value(id, key);
       if (typeof v === 'number') return v;
@@ -253,7 +255,8 @@
    *  the garden without one takes the weather's. Shown at the room's
    *  foot, not where the probe hangs. */
   const climates = $derived.by(() => {
-    const outside = tempOf(home.config?.outdoor?.weather);
+    // Measured when a station speaks (#246): `dehors:meteo`, else the forecast.
+    const outside = tempOf(OUTSIDE) ?? tempOf(home.config?.outdoor?.weather);
     let garden = false;
     const out = [];
     const rooms = (floor.rooms ?? []).filter((r) => r.kind !== 'void' && r.kind !== 'roof');
@@ -343,7 +346,7 @@
 
       <!-- rooms, their texture, their warmth -->
       {#each floor.rooms ?? [] as r (r.id)}
-        <polygon class="room" points={points(r.poly)} fill={skin.rooms[r.kind] ?? skin.rooms.other} stroke={skin.roomLine} stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-dasharray={skin.roomLine === 'none' ? null : '6 4'} />
+        <polygon class="room" points={points(r.poly)} fill={(skin.real && r.finish?.tint) || (skin.rooms[r.kind] ?? skin.rooms.other)} stroke={skin.roomLine} stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-dasharray={skin.roomLine === 'none' ? null : '6 4'} />
         {#if TEXTURE[r.kind]}
           <polygon points={points(r.poly)} fill="url(#{TEXTURE[r.kind]}-{uid})" />
         {/if}
@@ -379,15 +382,17 @@
           onpointerup={dropItem}
           onpointercancel={dropItem}
         >
-          {#if it.kind === 'plant'}
-            <circle {cx} {cy} r={Math.min(it.w, it.h) / 2} fill={dark ? '#1f3323' : '#cfe3bf'} stroke={skin.itemLine} stroke-width="1.2" vector-effect="non-scaling-stroke" />
+          {#if it.kind === 'plant' || it.kind === 'tree'}
+            <circle {cx} {cy} r={Math.min(it.w, it.h) / 2} fill={dark ? '#1f3323' : '#cfe3bf'} fill-opacity={it.kind === 'tree' ? 0.7 : 1} stroke={skin.itemLine} stroke-width="1.2" vector-effect="non-scaling-stroke" />
+          {:else if it.kind === 'pendant'}
+            <circle {cx} {cy} r={Math.min(it.w, it.h) / 2} fill={(skin.real && it.color) || skin.item} stroke={skin.itemLine} stroke-width="1.2" vector-effect="non-scaling-stroke" />
           {:else if it.kind === 'trampoline'}
             <ellipse {cx} {cy} rx={it.w / 2} ry={it.h / 2} fill={skin.item} stroke={skin.itemLine} stroke-width="1.2" vector-effect="non-scaling-stroke" />
             <ellipse {cx} {cy} rx={it.w * 0.42} ry={it.h * 0.42} fill="none" stroke={skin.itemLine} stroke-width="1" vector-effect="non-scaling-stroke" />
           {:else if it.kind === 'toilet' || it.kind === 'sink'}
             <ellipse {cx} {cy} rx={it.w / 2} ry={it.h / 2} fill={skin.item} stroke={skin.itemLine} stroke-width="1.2" vector-effect="non-scaling-stroke" />
           {:else}
-            <rect x={it.x} y={it.y} width={it.w} height={it.h} rx={Math.min(it.w, it.h) * (it.kind === 'car' ? 0.3 : 0.08)} fill={skin.item} stroke={skin.itemLine} stroke-width="1.2" vector-effect="non-scaling-stroke" />
+            <rect x={it.x} y={it.y} width={it.w} height={it.h} rx={Math.min(it.w, it.h) * (it.kind === 'car' ? 0.3 : 0.08)} fill={(skin.real && it.color) || skin.item} stroke={skin.itemLine} stroke-width="1.2" vector-effect="non-scaling-stroke" />
             {#if it.kind === 'stairs'}
               {@const steps = Math.max(2, Math.round(Math.max(it.w, it.h) / 26))}
               {#each Array(steps - 1) as _, n (n)}

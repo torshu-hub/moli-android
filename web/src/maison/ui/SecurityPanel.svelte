@@ -1,8 +1,9 @@
 <script>
   import { untrack } from 'svelte';
-  import { hub, home, device, value, since, nameOf, roomOf, hidden, doorOpen, isOn, clock, relative } from '../lib/home.svelte.js';
+  import { hub, home, device, value, since, nameOf, roomOf, hidden, doorOpen, isOn, alarmDevices, clock, relative } from '../lib/home.svelte.js';
   import { t } from '../../lib/i18n.svelte.js';
   import Icon from './Icon.svelte';
+  import AlarmCard from './AlarmCard.svelte';
 
   /** The house's safety at a glance: the doors, what moves, the alarm. A
    *  sensor gone silent says so: a dead battery, an unknown state or a
@@ -15,6 +16,14 @@
    *  has said nothing for this long is not trusted any more. */
   const STALE = 26 * 3_600_000;
   const has = (d, keys) => keys.find((k) => d?.points.some((p) => p.key === k)) ?? null;
+  /** What says someone moves or is there: the usual keys first, else any point
+   *  the server reads as presence (a mmWave radar's `presence`). */
+  const moveKey = (d) => has(d, MOVES) ?? d?.points.find((p) => p.semantic === 'occupancy')?.key ?? null;
+  /** Who is home (people, phones, presence drivers) is no sensor of the house,
+   *  whatever its instance is called. */
+  const PEOPLE = ['people', 'phones', 'presence'];
+  const aboutPeople = (d) =>
+    d.id.startsWith('presence:') || d.id.startsWith('telephones:') || PEOPLE.includes(hub.drivers?.find((x) => x.instance === d.instance)?.kind);
   const battery = (id) => {
     const pct = value(id, 'battery_percentage') ?? value(id, 'battery');
     return typeof pct === 'number' ? Math.round(pct) : null;
@@ -82,9 +91,9 @@
 
   const sensors = $derived(
     Object.values(hub.devices)
-      .filter((d) => !hidden(d.id) && !d.id.startsWith('presence:') && !d.id.startsWith('telephones:') && has(d, MOVES))
+      .filter((d) => !hidden(d.id) && !aboutPeople(d) && moveKey(d))
       .map((d) => {
-        const key = has(d, MOVES);
+        const key = moveKey(d);
         const v = value(d.id, key);
         const moving = v === true || v === 'pir' || Number(value(d.id, 'person')) > 0 || value(d.id, 'person') === true;
         const why = silence(d, key);
@@ -108,6 +117,10 @@
       .filter((d) => !hidden(d.id) && roomOf(d) === 'Sécurité')
       .map((d) => ({ id: d.id, name: nameOf(d.id), on: d.online === false ? null : isOn(d.id), ringing: /en cours/i.test(nameOf(d.id)) })),
   );
+
+  // The house's security panels, wherever they are: their own card carries
+  // the arm mode, while a « Sécurité » room keeps its switches above.
+  const panels = $derived(alarmDevices().map((d) => ({ id: d.id, name: nameOf(d.id) })));
 
   const summary = $derived.by(() => {
     const open = doors.filter((d) => d.open === true);
@@ -181,6 +194,10 @@
       {/each}
     </div>
   {/if}
+
+  {#each panels as a (a.id)}
+    <AlarmCard id={a.id} name={a.name} compact />
+  {/each}
 </section>
 
 <style>

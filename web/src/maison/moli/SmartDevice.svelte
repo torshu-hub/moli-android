@@ -4,12 +4,13 @@
   import LightTile from '../ui/LightTile.svelte';
   import ClimateCard from '../ui/ClimateCard.svelte';
   import ValveCard from '../ui/ValveCard.svelte';
-  import { isValve } from '../lib/capabilities.js';
+  import { heatsOnly } from '../lib/radiator.js';
   import CameraTile from '../ui/CameraTile.svelte';
   import CoverTile from '../ui/CoverTile.svelte';
   import SpeakerCard from '../ui/SpeakerCard.svelte';
   import SensorCard from '../ui/SensorCard.svelte';
   import WeatherCard from './WeatherCard.svelte';
+  import { OUTSIDE } from '../lib/outside.js';
 
   /** Any device, shown the way it is used. */
   let { id, title = null } = $props();
@@ -21,11 +22,11 @@
 
 {#if !d}
   <section class="card"><p class="muted">{t('moli.appareil.introuvable')}</p></section>
-{:else if id === home.config?.outdoor?.weather}
+{:else if id === home.config?.outdoor?.weather || id === OUTSIDE}
   <WeatherCard />
 {:else if kind === 'camera'}
   <CameraTile {id} name={title ?? cam?.name ?? nameOf(id)} refresh={cam?.refresh ?? 10} battery={cam?.battery} onopen={() => (location.hash = '#/cameras')} />
-{:else if kind === 'climate' && isValve(d)}
+{:else if kind === 'climate' && heatsOnly(d)}
   <ValveCard {id} name={title ?? nameOf(id)} />
 {:else if kind === 'climate'}
   <ClimateCard {id} name={title ?? nameOf(id)} />
@@ -39,6 +40,8 @@
   <div class="card tight"><LightTile {id} name={title} dimmer /></div>
 {:else if kind === 'plug'}
   <div class="card tight"><LightTile {id} name={title} icon="flash" /></div>
+{:else if kind === 'helper' && d.points.some((p) => p.key === 'on')}
+  <div class="card tight"><LightTile {id} point="on" name={title} icon="toggle" /></div>
 {:else}
   <SensorCard {id} name={title} />
 {/if}

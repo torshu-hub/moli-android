@@ -66,6 +66,20 @@ const SCHEMA: &str = "
         since INTEGER PRIMARY KEY,
         price REAL NOT NULL
     ) STRICT;
+    -- The point each meter read last time: a counter swapped for another
+    -- one starts from its own first reading (see `follow_sources`).
+    CREATE TABLE IF NOT EXISTS meter_source (
+        meter TEXT PRIMARY KEY,
+        point TEXT NOT NULL
+    ) STRICT;
+    -- A reading held as suspect (a jump, a fall) and how many readings
+    -- back it: a restart does not forget it (see `Tracker::resumed`).
+    CREATE TABLE IF NOT EXISTS meter_suspect (
+        meter TEXT PRIMARY KEY,
+        kwh   REAL NOT NULL,
+        ts    INTEGER NOT NULL,
+        seen  INTEGER NOT NULL
+    ) STRICT;
     -- Databases from before meter_first: the older of the last reading
     -- and the first recorded hour.
     INSERT OR IGNORE INTO meter_first (meter, ts)
@@ -125,7 +139,73 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Adds `slices` and sets the meter's last reading, atomically.
+    /// Each meter's suspect reading, as it was left before a restart.
+    pub fn suspects(&self) -> Result<HashMap<String, (Reading, u32)>, EnergyError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT meter, kwh, ts, seen FROM meter_suspect")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (
+                    Reading {
+                        kwh: row.get(1)?,
+                        ts: unms(row.get(2)?),
+                    },
+                    u32::try_from(row.get::<_, i64>(3)?).unwrap_or(1),
+                ),
+            ))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Keeps (or forgets, with `None`) a meter's suspect reading.
+    pub fn hold(&self, meter: &str, suspect: Option<(Reading, u32)>) -> Result<(), EnergyError> {
+        let conn = self.conn();
+        match suspect {
+            Some((reading, seen)) => conn.execute(
+                "INSERT INTO meter_suspect (meter, kwh, ts, seen) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (meter) DO UPDATE SET
+                    kwh = excluded.kwh, ts = excluded.ts, seen = excluded.seen",
+                params![meter, reading.kwh, ms(reading.ts), i64::from(seen)],
+            )?,
+            None => conn.execute("DELETE FROM meter_suspect WHERE meter = ?1", params![meter])?,
+        };
+        Ok(())
+    }
+
+    /// Notes the point each meter reads. A meter whose point changed since
+    /// the last run forgets its last reading: the new device's lifetime
+    /// total is not the old one's, and the difference was never used by the
+    /// home. Its history stays. Returns those meters.
+    pub fn follow_sources(&self, meters: &[(String, String)]) -> Result<Vec<String>, EnergyError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let mut changed = Vec::new();
+        for (meter, point) in meters {
+            let before: Option<String> = tx
+                .query_row(
+                    "SELECT point FROM meter_source WHERE meter = ?1",
+                    params![meter],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if before.as_ref().is_some_and(|b| b != point) {
+                tx.execute("DELETE FROM meter_last WHERE meter = ?1", params![meter])?;
+                tx.execute("DELETE FROM meter_suspect WHERE meter = ?1", params![meter])?;
+                changed.push(meter.clone());
+            }
+            tx.execute(
+                "INSERT INTO meter_source (meter, point) VALUES (?1, ?2)
+                 ON CONFLICT (meter) DO UPDATE SET point = excluded.point",
+                params![meter, point],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    /// Adds `slices` and sets the meter's last reading, atomically (a
+    /// suspect reading is settled by it).
     pub fn record(
         &self,
         meter: &str,
@@ -155,6 +235,7 @@ impl Store {
              ON CONFLICT (meter) DO UPDATE SET kwh = excluded.kwh, ts = excluded.ts",
             params![meter, last.kwh, ms(last.ts)],
         )?;
+        tx.execute("DELETE FROM meter_suspect WHERE meter = ?1", params![meter])?;
         tx.commit()?;
         Ok(())
     }
@@ -242,6 +323,55 @@ impl Store {
         Ok(())
     }
 
+    /// Every price of the house at once (the list edited from the
+    /// dashboard), and the hours of `meters` from `from` on priced again
+    /// with it, in one go: an hour takes the price in force in its middle,
+    /// none before the first price. Returns how many hours were priced again.
+    pub fn replace_house_prices(
+        &self,
+        prices: &[HousePrice],
+        meters: &[String],
+        from: u64,
+    ) -> Result<usize, EnergyError> {
+        let mut sorted = prices.to_vec();
+        sorted.sort_by_key(|p| p.since);
+        // Slices of time from `from` on, each with its price (none before the first).
+        let mut slices: Vec<(u64, u64, Option<f64>)> = Vec::new();
+        let first = sorted.first().map_or(u64::MAX, |p| p.since);
+        if from < first {
+            slices.push((from, first, None));
+        }
+        for (i, p) in sorted.iter().enumerate() {
+            let end = sorted.get(i + 1).map_or(u64::MAX, |n| n.since);
+            if end > from {
+                slices.push((p.since.max(from), end, Some(p.price)));
+            }
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM house_price", [])?;
+        let mut repriced = 0;
+        {
+            let mut add = tx.prepare("INSERT INTO house_price (since, price) VALUES (?1, ?2)")?;
+            for p in &sorted {
+                add.execute(params![ms(p.since), p.price])?;
+            }
+            // The middle of an hour decides its price: `hour + half` in [a, b).
+            let mut set = tx.prepare(
+                "UPDATE energy_hour SET cost = kwh * ?4
+                 WHERE meter = ?1 AND hour + ?5 >= ?2 AND hour + ?5 < ?3",
+            )?;
+            let half = ms(crate::meter::HOUR_MS / 2);
+            for meter in meters {
+                for &(a, b, price) in &slices {
+                    repriced += set.execute(params![meter, ms(a), ms(b), price, half])?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(repriced)
+    }
+
     /// The first hour on record (for « depuis le … »).
     pub fn first_hour(&self) -> Result<Option<u64>, EnergyError> {
         let first: Option<Option<i64>> = self
@@ -296,6 +426,82 @@ mod tests {
     }
 
     #[test]
+    fn a_suspect_reading_is_kept_until_a_reading_settles_it() {
+        let store = Store::memory();
+        let suspect = (
+            Reading {
+                kwh: 2_545.57,
+                ts: 7,
+            },
+            2,
+        );
+        store.hold("borne", Some(suspect)).unwrap();
+        assert_eq!(store.suspects().unwrap()["borne"], suspect);
+        store.hold("borne", None).unwrap();
+        assert!(store.suspects().unwrap().is_empty());
+        // A filed reading (counted or rebased) settles it.
+        store.hold("borne", Some(suspect)).unwrap();
+        store
+            .record(
+                "borne",
+                Reading {
+                    kwh: 2_545.6,
+                    ts: 9,
+                },
+                &[],
+            )
+            .unwrap();
+        assert!(store.suspects().unwrap().is_empty());
+        // So does another point behind the meter.
+        store.hold("borne", Some(suspect)).unwrap();
+        let sources = |point: &str| vec![("borne".to_owned(), point.to_owned())];
+        store.follow_sources(&sources("a:b/energy")).unwrap();
+        store.follow_sources(&sources("c:b/energy")).unwrap();
+        assert!(store.suspects().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_meter_moved_to_another_point_starts_from_its_first_reading() {
+        let store = Store::memory();
+        let sources = |point: &str| vec![("grid".to_owned(), point.to_owned())];
+        // First run, then the same point again: nothing forgotten.
+        assert!(
+            store
+                .follow_sources(&sources("a:m/energy"))
+                .unwrap()
+                .is_empty()
+        );
+        store
+            .record(
+                "grid",
+                Reading { kwh: 3.0, ts: 5 },
+                &[row("grid", 0, 1.0, None)],
+            )
+            .unwrap();
+        assert!(
+            store
+                .follow_sources(&sources("a:m/energy"))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(store.last_readings().unwrap().len(), 1);
+        // Another device behind the same meter: its total is not compared
+        // with the old one, the hours already filed stay.
+        assert_eq!(
+            store.follow_sources(&sources("b:m/energy")).unwrap(),
+            vec!["grid".to_owned()]
+        );
+        assert!(store.last_readings().unwrap().is_empty());
+        assert_eq!(store.hours(0, 10).unwrap().len(), 1);
+        assert!(
+            store
+                .follow_sources(&sources("b:m/energy"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn the_house_prices_are_kept_in_order() {
         let store = Store::memory();
         assert!(store.house_prices().unwrap().is_empty());
@@ -312,6 +518,63 @@ mod tests {
         store.add_house_price(late).unwrap();
         store.add_house_price(early).unwrap();
         assert_eq!(store.house_prices().unwrap(), vec![early, late]);
+    }
+
+    #[test]
+    fn a_new_list_of_prices_prices_the_hours_again_from_where_it_changed() {
+        const H: u64 = 3_600_000;
+        let store = Store::memory();
+        // Three hours of the grid and of the panels, 2 kWh each.
+        let rows: Vec<HourRow> = (0..3)
+            .flat_map(|i| {
+                [
+                    row("grid", i * H, 2.0, Some(0.4)),
+                    row("pv", i * H, 2.0, None),
+                ]
+            })
+            .collect();
+        store.import(&rows).unwrap();
+        let cost = |meter: &str, hour: u64| {
+            store
+                .hours(0, 3 * H)
+                .unwrap()
+                .into_iter()
+                .find(|r| r.meter == meter && r.hour == hour)
+                .and_then(|r| r.cost)
+        };
+        // 0.10 for the first hour, 0.30 from the second one on: only the
+        // grid's hours from the second one are priced again.
+        let prices = [
+            HousePrice {
+                since: 0,
+                price: 0.10,
+            },
+            HousePrice {
+                since: H,
+                price: 0.30,
+            },
+        ];
+        let repriced = store
+            .replace_house_prices(&prices, &["grid".to_owned()], H)
+            .unwrap();
+        assert_eq!(repriced, 2);
+        assert_eq!(store.house_prices().unwrap(), prices.to_vec());
+        assert_eq!(cost("grid", 0), Some(0.4));
+        assert!((cost("grid", H).unwrap() - 0.6).abs() < 1e-9);
+        assert!((cost("grid", 2 * H).unwrap() - 0.6).abs() < 1e-9);
+        assert_eq!(cost("pv", H), None);
+        // Before the first price, an hour has none.
+        let later = [HousePrice {
+            since: 2 * H,
+            price: 0.5,
+        }];
+        store
+            .replace_house_prices(&later, &["grid".to_owned()], 0)
+            .unwrap();
+        assert_eq!(store.house_prices().unwrap(), later.to_vec());
+        assert_eq!(cost("grid", 0), None);
+        assert_eq!(cost("grid", H), None);
+        assert!((cost("grid", 2 * H).unwrap() - 1.0).abs() < 1e-9);
     }
 
     #[test]

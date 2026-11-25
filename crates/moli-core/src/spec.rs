@@ -52,11 +52,19 @@ pub enum Unit {
     Second,
     Minute,
     Hour,
+    /// A speed, in kilometres per hour (wind).
+    KilometrePerHour,
+    /// A height of water, in millimetres (rain).
+    Millimetre,
+    /// A rain rate, in millimetres per hour.
+    MillimetrePerHour,
+    /// An angle, in degrees (wind direction: 0 = from the north, clockwise).
+    Degree,
     Other(Arc<str>),
 }
 
 impl Unit {
-    const TABLE: [(Unit, &'static str); 16] = [
+    const TABLE: [(Unit, &'static str); 20] = [
         (Unit::Watt, "W"),
         (Unit::KiloWattHour, "kWh"),
         (Unit::WattHour, "Wh"),
@@ -73,6 +81,10 @@ impl Unit {
         (Unit::Second, "s"),
         (Unit::Minute, "min"),
         (Unit::Hour, "h"),
+        (Unit::KilometrePerHour, "km/h"),
+        (Unit::Millimetre, "mm"),
+        (Unit::MillimetrePerHour, "mm/h"),
+        (Unit::Degree, "°"),
     ];
 
     /// Parses a unit symbol. Empty → `None`; unknown symbols are preserved.
@@ -155,6 +167,12 @@ pub enum Semantic {
     Position,
     Occupancy,
     WaterLeak,
+    /// How wet a plant's soil is, in %. A device with one is a plant sensor:
+    /// its temperature and humidity are the pot's, never the room's.
+    SoilMoisture,
+    /// A plant asks for water (binary, true: the soil is too dry). A plant's
+    /// thirst, never a security alert like `WaterLeak`.
+    SoilDry,
     Smoke,
     Tamper,
     Config,
@@ -167,10 +185,50 @@ pub enum Semantic {
     /// something is wrong): a backup, a disk, a link. A device with one is
     /// shown on the dashboard's « Parc » page; a text point `detail` words it.
     Alert,
+    /// A press of a button or of a remote's key (read-only): each value is
+    /// an occurrence, not a state, and the same value twice is two presses.
+    /// The value is the kind of press as the brand gives it (`single`,
+    /// `double`, `hold`, `short_release`…). Never deduced from a name (an
+    /// `action` or a `button` elsewhere keeps its meaning): the driver that
+    /// sends the point with `pulse_state` declares it (#211).
+    Press,
+    /// The weather outside, as a station measures it or a forecast gives
+    /// it. Never deduced from a name (a fan has a `wind_speed`, a pump a
+    /// `rate`): the driver that knows the point declares it. Each has one
+    /// unit (`fixed_unit`): a driver converts before it publishes.
+    ///
+    /// Mean wind speed, in km/h.
+    WindSpeed,
+    /// Wind gusts, in km/h.
+    WindGust,
+    /// Where the wind blows from, in degrees (0 = north, clockwise).
+    WindDirection,
+    /// How hard it rains now, in mm/h.
+    RainRate,
+    /// The rain fallen today, in mm: the source resets it each day (an
+    /// endless counter is not today's rain).
+    RainToday,
+    /// The UV index, without a unit.
+    UvIndex,
     Other,
 }
 
 impl Semantic {
+    /// The one unit a point with this meaning carries, for the meanings that
+    /// have one: `Some(None)` = no unit (the UV index), `None` = the meaning
+    /// does not fix a unit.
+    #[must_use]
+    pub fn fixed_unit(self) -> Option<Option<Unit>> {
+        match self {
+            Self::WindSpeed | Self::WindGust => Some(Some(Unit::KilometrePerHour)),
+            Self::WindDirection => Some(Some(Unit::Degree)),
+            Self::RainRate => Some(Some(Unit::MillimetrePerHour)),
+            Self::RainToday => Some(Some(Unit::Millimetre)),
+            Self::UvIndex => Some(None),
+            _ => None,
+        }
+    }
+
     /// Brand-agnostic inference from a property name and its unit.
     /// Unit evidence wins over naming, naming over nothing.
     #[must_use]
@@ -204,6 +262,8 @@ impl Semantic {
             "contact" => Self::Contact,
             "occupancy" | "presence" | "motion" => Self::Occupancy,
             "water_leak" => Self::WaterLeak,
+            "soil_moisture" => Self::SoilMoisture,
+            "soil_dry" => Self::SoilDry,
             "smoke" => Self::Smoke,
             "tamper" => Self::Tamper,
             _ => Self::Other,
@@ -310,6 +370,47 @@ mod tests {
     }
 
     #[test]
+    fn press_is_declared_never_guessed() {
+        assert_eq!(
+            serde_json::to_string(&Semantic::Press).unwrap(),
+            "\"press\""
+        );
+        // A key named so is not a press until its driver says it is.
+        for key in ["action", "button", "button1", "press", "switch_mode1"] {
+            assert_eq!(Semantic::infer(key, None), Semantic::Other, "{key}");
+        }
+    }
+
+    #[test]
+    fn weather_meanings_are_declared_with_their_unit() {
+        // Never guessed from a name: a fan has a `wind_speed` too.
+        assert_eq!(
+            Semantic::infer("wind_speed", Some(&Unit::KilometrePerHour)),
+            Semantic::Other
+        );
+        assert_eq!(Semantic::infer("uv_index", None), Semantic::Other);
+        assert_eq!(Semantic::infer("rain_rate", None), Semantic::Other);
+        assert_eq!(
+            serde_json::to_string(&Semantic::RainToday).unwrap(),
+            "\"rain_today\""
+        );
+        assert_eq!(
+            Semantic::WindGust.fixed_unit(),
+            Some(Some(Unit::KilometrePerHour))
+        );
+        assert_eq!(
+            Semantic::WindDirection.fixed_unit(),
+            Some(Some(Unit::Degree))
+        );
+        assert_eq!(
+            Semantic::RainRate.fixed_unit(),
+            Some(Some(Unit::MillimetrePerHour))
+        );
+        assert_eq!(Semantic::UvIndex.fixed_unit(), Some(None));
+        assert_eq!(Semantic::Temperature.fixed_unit(), None);
+    }
+
+    #[test]
     fn semantic_inference() {
         assert_eq!(Semantic::infer("state", None), Semantic::OnOff);
         assert_eq!(Semantic::infer("state_l1", None), Semantic::OnOff);
@@ -336,6 +437,14 @@ mod tests {
             "a position is never deduced to be a shutter's opening"
         );
         assert_eq!(Semantic::infer("whatever", None), Semantic::Other);
+        assert_eq!(
+            Semantic::infer("soil_moisture", Some(&Unit::Percent)),
+            Semantic::SoilMoisture
+        );
+        assert_eq!(Semantic::infer("soil_dry", None), Semantic::SoilDry);
+        // A bare `dry` says nothing alone (a fan's mode, a relay's contact):
+        // a driver that knows the device is a plant sensor says so.
+        assert_eq!(Semantic::infer("dry", None), Semantic::Other);
     }
 
     #[test]

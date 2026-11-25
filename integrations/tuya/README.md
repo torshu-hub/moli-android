@@ -2,7 +2,9 @@
 
 - Aucun code repris : trames 3.3 / 3.4 / 3.5 vérifiées octet par octet contre la sortie
   d'implémentations existantes (localtuya, tinytuya), règle de tinytuya pour les en-têtes de version ; l'import lit le
-  compte Tuya déjà lié à HA (`tools/home-assistant/tuya-export.py`).
+  cloud Tuya : directement, avec les clés du projet cloud que Moli garde déjà pour le repli
+  (`moli-os tuya import --cloud`), ou par le compte déjà lié à HA
+  (`tools/home-assistant/tuya-export.py`).
 - Pas de fixture d'appareil : les tests (`src/protocol.rs`) utilisent des trames produites
   par ces implémentations (vecteurs d'interopérabilité), pas des captures.
 - Vérifié en vrai : import depuis HA, lecture et écriture locales sur des prises Tuya.
@@ -84,7 +86,27 @@
   l'état de ce `cid` dans les 100 ms ; une autre valeur (`remote_control`) n'est pas
   appliquée, même bouton réveillé par des appuis. Pas encore essayé sur un relais ou une
   prise Zigbee, toujours alimentés : le seul essai qui prouverait qu'un ordre est exécuté.
-- Reste : la version 3.1 n'est pas gérée ; l'import dépend encore de HA ; une sonde sur pile
+- **Import sans Home Assistant** : `moli-os tuya import --cloud` lit la liste des appareils du
+  projet cloud (`/v1.0/iot-01/associated-users/devices` : nom, catégorie, produit, clé locale,
+  `node_id`) puis le modèle de chaque appareil (`/v2.0/cloud/thing/{id}/model` : les DP, leur
+  type, leur plage, lecture ou écriture), et donne au même `merge_import` le même fichier que
+  `tuya-export.py` (passerelle d'un sous-appareil devinée de la même façon). `--summary` liste
+  ce qui serait rangé, sans clé ni écriture. Le modèle du cloud nomme certains DP autrement que
+  l'appareil, pour le même numéro (une ampoule : `bright_value` pour `bright_value_v2`, DP 22 à
+  26 ; un interrupteur à scènes : `switch_type_1` pour `switch_mode1`) : l'import rend ces noms
+  d'appareil, retire `test_bit` (contrôle d'usine), et un appareil déjà dans `tuya.json` garde
+  ses DP tels quels, aucun compris (une caméra ou une télécommande infrarouge importée sans DP
+  par HA n'en reçoit pas du cloud : `sd_format`, sirène, codes bruts) ; seule sa clé locale est
+  mise à jour. Une caméra (`sp`), un hub infrarouge (`wnykq`) ou une télécommande (`infrared_*`)
+  nouvelle n'en reçoit pas non plus, comme par l'export HA. Lancé en root, l'import rend `tuya.json` et le coffre au propriétaire du dossier
+  de données (moli-os tourne sous cet utilisateur). Essayé le 8 novembre 2026 sur un vrai
+  compte (43 appareils : prises, ampoules, passerelle Zigbee et ses sous-appareils, hub
+  infrarouge et ses télécommandes, caméras, Fingerbot) : chaque sous-appareil rattaché à la
+  bonne passerelle, les 42 appareils déjà connus inchangés, le nouveau (une ampoule) ajouté avec
+  ses noms d'appareil ; Moli redémarré charge les 43. Puis une prise neuve (LSC avec mesure),
+  ajoutée dans l'application Smart Life et récupérée par `--cloud` : en ligne dans Moli au
+  redémarrage, commandée en local (marche, arrêt), sans Home Assistant.
+- Reste : la version 3.1 n'est pas gérée ; une sonde sur pile
   ne répond pas à la requête d'état : sa valeur arrive à son prochain envoi.
 - Limites des sous-appareils en local : la disponibilité est celle de la passerelle (un
   sous-appareil sur pile éteint reste « en ligne » tant que sa passerelle l'est) ; l'accusé
@@ -118,3 +140,19 @@
   été vu quand le robot s'est arrêté hors de sa base ; il a disparu une fois remis en charge, sens inconnu.
 - Tableau de bord : une carte sur l'accueil, avec seulement les ordres possibles dans l'état du robot. Rendu vérifié ; boutons Démarrer, Faire sonner et aspiration cliqués sur la vraie page, ordres interceptés, et ces mêmes ordres envoyés au robot par l'API.
 - Reste : carte et zones, langues, programmation, Serie 75 S et 95 S.
+
+## Centrales d'alarme : Daewoo SA501
+
+- Catégorie Tuya `mal`, protocole 3.3, **en local** une fois la clé obtenue. Le mode
+  d'armement est `system_arm_type` (`disarmed`, `armed`, `home`) ; la batterie
+  (`bat_status`), le secteur (`dc_status`) et le GSM (`gsm_status`) sont lus, les délais,
+  sirènes, SMS et tonalités sont réglables.
+- **Vérifié sur du vrai matériel** : lecture et écriture locales du mode, des délais et des
+  sirènes. Le mot de passe, les numéros de téléphone, l'IMEI et les codes bruts ne sont pas
+  repris dans `tuya.json`.
+- Tableau de bord : une carte « Alarme » sur l'accueil, la même commande compacte dans le
+  panneau Sécurité des caméras et dans la pièce ; un filtre « Alarme » dans Pièces. Armer
+  demande une confirmation ; désarmer part en un geste.
+- Limites : aucun point ne dit qu'une sirène sonne ni quelle zone a déclenché. L'appairage
+  des zones, la SIM et les numéros d'appel restent dans l'application du fabricant.
+- Ajout, configuration et sécurité : [docs/components/alarme.md](../../docs/components/alarme.md).

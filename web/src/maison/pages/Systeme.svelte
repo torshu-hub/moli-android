@@ -7,7 +7,9 @@
   import AssistantExchanges from '../ui/AssistantExchanges.svelte';
   import Rules from '../moli/Rules.svelte';
   import AlexaAccount from '../ui/AlexaAccount.svelte';
+  import EngieAccount from '../ui/EngieAccount.svelte';
   import DashboardCode from '../ui/DashboardCode.svelte';
+  import WallCard from '../ui/WallCard.svelte';
   import PeopleCard from '../ui/PeopleCard.svelte';
   import { hub, home, hidden, watches } from '../lib/home.svelte.js';
   import { t, locale } from '../../lib/i18n.svelte.js';
@@ -98,7 +100,7 @@
   // ---- words ------------------------------------------------------------------
   // Driver kinds: their name and description are in the catalog
   // (systeme.pilotes.<kind>.nom / .desc); a kind not listed shows as it is.
-  const KINDS = ['z2m', 'zwave', 'hue', 'tuya', 'reolink', 'sonos', 'helpers', 'philips', 'frigate', 'bambu', 'tapo', 'shelly', 'igd', 'presence', 'telegram', 'phones', 'profile', 'izypower', 'solarman'];
+  const KINDS = ['z2m', 'zwave', 'rfxcom2mqtt', 'hue', 'tuya', 'reolink', 'sonos', 'helpers', 'philips', 'frigate', 'bambu', 'tapo', 'shelly', 'igd', 'presence', 'telegram', 'phones', 'profile', 'izypower', 'solarman'];
   const kindWord = (kind, part) => (KINDS.includes(kind) ? t(`systeme.pilotes.${kind}.${part}`) : null);
   const driverName = (d) => (d.kind === 'profile' ? d.instance.charAt(0).toUpperCase() + d.instance.slice(1) : (kindWord(d.kind, 'nom') ?? d.kind));
 
@@ -172,6 +174,16 @@
 
   <DashboardCode />
 
+  <!-- In the Moli app on an Android tablet only. -->
+  <WallCard />
+
+  <a class="somfy-entry" href="#/ajouter"><Icon name="plus" size={24} /><span><strong>{t('ajout.titre')}</strong><br />{t('ajout.entree')}</span><Icon name="chevron-right" size={20} /></a>
+
+  <section class="gateway-entry" aria-label={t('systeme.airzone.title')}>
+    <div><h2>{t('systeme.airzone.title')}</h2><p>{t('systeme.airzone.help')}</p></div>
+    <div class="gateway-links"><a href="#/airzone/installation">{t('airzone_gateways.manage')}<Icon name="chevron-right" size={18} /></a><a href="#/airzone/add">{t('systeme.airzone.add')}<Icon name="chevron-right" size={18} /></a></div>
+  </section>
+
   <AssistantSettings />
 
   <AssistantExchanges />
@@ -179,7 +191,11 @@
 
   <AlexaAccount />
 
+  <EngieAccount />
+
   <TuyaCloudKeys />
+
+  <a class="somfy-entry" href="#/somfy"><Icon name="shutter" size={24} /><span><strong>{t('systeme.somfy.page_title')}</strong><br />{t('systeme.somfy.entry')}</span><Icon name="chevron-right" size={20} /></a>
 
   <!-- Only where a host script measures Moli against a Home Assistant. -->
   {#if sys && last?.ha}
@@ -323,6 +339,12 @@
 </div>
 
 <style>
+  .somfy-entry { display: flex; align-items: center; gap: 14px; padding: 18px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--ink); text-decoration: none; background: var(--surface); }
+  .somfy-entry span { flex: 1; }
+  .somfy-entry:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+
+
+  .gateway-links {display:flex;gap:12px;flex-wrap:wrap;}
   .systeme {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -332,6 +354,13 @@
   .systeme > :global(*) {
     min-width: 0;
   }
+
+  .gateway-entry {display:flex; flex-wrap:wrap; align-items:center; gap:16px 28px; padding:20px; border-radius:var(--r-lg); background:var(--surface); box-shadow:var(--shadow);}
+  .gateway-entry div {flex:1 1 280px;}
+  .gateway-entry h2 {font-size:18px; margin:0 0 7px;}
+  .gateway-entry p {font-size:14px; line-height:1.6; color:var(--ink-2); margin:0; max-width:65ch;}
+  .gateway-entry a {display:inline-flex; align-items:center; gap:6px; min-height:44px; color:var(--cool); font-weight:600; font-size:14px;}
+  .gateway-entry a:focus-visible {outline:3px solid var(--cool); outline-offset:3px;}
 
   .roomless {
     display: grid;
