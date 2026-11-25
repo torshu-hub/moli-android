@@ -44,7 +44,7 @@ public final class ManagementActivity extends Activity {
     };
 
     /** The official health route answers: Moli serves. */
-    private static boolean healthy(int port) {
+    static boolean healthy(int port) {
         try {
             HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:" + port + "/api/health").openConnection();
             connection.setConnectTimeout(1000);
@@ -71,6 +71,10 @@ public final class ManagementActivity extends Activity {
         button(root, R.string.integrations, () ->
                 startActivity(new Intent(this, IntegrationsActivity.class)));
         setContentView(root);
+        // A house already set up opens straight on Moli; this screen stays
+        // one Back away.
+        if (saved == null && ProtectedKey.exists(this))
+            startActivity(new Intent(this, DashboardActivity.class));
     }
 
     private Button button(LinearLayout parent, int label, Runnable action) {
@@ -115,6 +119,7 @@ public final class ManagementActivity extends Activity {
             }
             dialog.dismiss();
             togglePower();
+            startActivity(new Intent(this, DashboardActivity.class));
         }));
         dialog.show();
     }
