@@ -1,6 +1,6 @@
 # PROJET.md — Moli OS Android (tout agent)
 
-Réponses en français. Préférences d'échange : celles que le propriétaire a configurées dans ton outil.
+Réponses en français. Règles d'échange : [ECHANGES.md](ECHANGES.md), à lire aussi avant tout travail.
 
 ## Une intégration propre
 Une intégration propre, c'est une fonctionnalité complète et native de Moli OS, construite avec les bonnes responsabilités et les mécanismes existants, sans surcouche inutile, simple à configurer et à utiliser, réutilisable sur d'autres plateformes et maintenable sans accumuler de correctifs.
