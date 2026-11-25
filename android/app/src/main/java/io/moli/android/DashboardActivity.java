@@ -102,8 +102,35 @@ public final class DashboardActivity extends Activity {
         }
     }
 
+    /**
+     * Back climbs the dashboard's routes instead of replaying every page seen:
+     * a sub-page goes to its section, a section to the home page, the home
+     * page to the management screen.
+     */
     @Override public void onBackPressed() {
-        if (web.canGoBack()) web.goBack(); else super.onBackPressed();
+        if (!loaded) { super.onBackPressed(); return; }
+        web.evaluateJavascript("location.hash", value -> {
+            String parent = parentRoute(value);
+            if (parent == null) finish();
+            else web.evaluateJavascript("location.hash = " + org.json.JSONObject.quote(parent), null);
+        });
+    }
+
+    /** The route one level up from a `location.hash` (as JSON), or null at home. */
+    static String parentRoute(String hashJson) {
+        String hash;
+        try {
+            Object value = new org.json.JSONTokener(hashJson).nextValue();
+            hash = value instanceof String ? (String) value : "";
+        } catch (org.json.JSONException invalid) {
+            hash = "";
+        }
+        String route = hash.startsWith("#") ? hash.substring(1) : hash;
+        while (route.startsWith("/")) route = route.substring(1);
+        while (route.endsWith("/")) route = route.substring(0, route.length() - 1);
+        if (route.isEmpty()) return null;
+        int cut = route.lastIndexOf('/');
+        return cut < 0 ? "#/" : "#/" + route.substring(0, cut);
     }
 
     @Override protected void onSaveInstanceState(Bundle out) {
