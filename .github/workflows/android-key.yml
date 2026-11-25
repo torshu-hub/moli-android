@@ -1,0 +1,54 @@
+# Une seule fois : crée la clé de signature de l'appli sur le runner et la
+# range dans le secret ANDROID_SIGNING_BUNDLE, sans jamais l'afficher.
+# Il faut SECRETS_TOKEN : un jeton du propriétaire, limité à ce dépôt,
+# permission « Secrets : lecture et écriture ». Une clé existante n'est
+# jamais remplacée (l'appli installée ne se mettrait plus à jour).
+name: android-key
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  key:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Clé de signature
+        env:
+          GH_TOKEN: ${{ secrets.SECRETS_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "Le secret SECRETS_TOKEN manque : rien n'est fait." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if gh secret list | grep -qw ANDROID_SIGNING_BUNDLE; then
+            echo "ANDROID_SIGNING_BUNDLE existe déjà : rien n'est remplacé." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          dir=$(mktemp -d)
+          chmod 700 "$dir"
+          pw=$(openssl rand -hex 24)
+          echo "::add-mask::$pw"
+          keytool -genkeypair -keystore "$dir/k.p12" -storetype PKCS12 -alias moli -keyalg RSA \
+            -keysize 4096 -validity 36500 -dname "CN=Moli" -storepass "$pw" -keypass "$pw" > /dev/null 2>&1
+          PW="$pw" P12="$dir/k.p12" OUT="$dir/bundle.json" python3 -I -c '
+          import base64, json, os
+          with open(os.environ["P12"], "rb") as f:
+              p12 = base64.b64encode(f.read()).decode()
+          fd = os.open(os.environ["OUT"], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w") as out:
+              json.dump({"p12": p12, "password": os.environ["PW"]}, out)
+          '
+          gh secret set ANDROID_SIGNING_BUNDLE < "$dir/bundle.json"
+          cert=$(keytool -list -v -keystore "$dir/k.p12" -storetype PKCS12 -storepass "$pw" 2>/dev/null | sed -n 's/.*SHA256: //p' | head -1)
+          rm -rf "$dir"
+          echo "Clé créée et rangée dans ANDROID_SIGNING_BUNDLE. Certificat SHA-256 : \`$cert\`. Supprimer maintenant SECRETS_TOKEN et le jeton." | tee -a "$GITHUB_STEP_SUMMARY"
