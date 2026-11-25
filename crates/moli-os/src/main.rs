@@ -8,7 +8,6 @@ mod config;
 pub mod hosted;
 mod managed_airzone;
 mod managed_devices;
-mod managed_integrations;
 mod timezone;
 
 use std::path::PathBuf;
@@ -442,8 +441,6 @@ fn open_hub(config: &Config, host: Option<&hosted::Host>) -> anyhow::Result<Hub>
     .context("cannot open the data directory (labels, journal, secrets)")
 }
 
-// The fork's setups (hosted, integrations) push it past the line budget.
-#[allow(clippy::too_many_lines)]
 async fn serve(config: Config, boot: Instant, host: Option<hosted::Host>) -> anyhow::Result<()> {
     // Before anything opens the data directory.
     demo_fresh(&config)?;
@@ -471,8 +468,6 @@ async fn serve(config: Config, boot: Instant, host: Option<hosted::Host>) -> any
 
     let (mut tasks, gates) = spawn_drivers(&config, &hub, &cancel, &airzone_setup)?;
     let device_setup = managed_devices::Manager::start(hub.clone(), &config, cancel.clone());
-    let integration_setup =
-        managed_integrations::Manager::start(hub.clone(), &config, cancel.clone());
     // Where the house is, for `dehors:soleil`: the automations hold it (and
     // follow a position chosen from the conversation); they start below.
     let placed: Arc<std::sync::OnceLock<moli_automation::Automations>> = Arc::default();
@@ -510,7 +505,6 @@ async fn serve(config: Config, boot: Instant, host: Option<hosted::Host>) -> any
     let surfaces = moli_api::Options {
         airzone_setup: Some(Arc::new(airzone_setup.clone())),
         device_setup: Some(Arc::new(device_setup.clone())),
-        integration_setup: Some(Arc::new(integration_setup.clone())),
         allowed_hosts: config.server.allowed_hosts.clone(),
         ui_pin,
         history,
@@ -543,7 +537,6 @@ async fn serve(config: Config, boot: Instant, host: Option<hosted::Host>) -> any
     .await?;
     airzone_setup.shutdown().await;
     device_setup.shutdown().await;
-    integration_setup.shutdown().await;
     for task in tasks {
         let _ = task.await;
     }
