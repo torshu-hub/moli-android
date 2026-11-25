@@ -228,11 +228,42 @@
     });
     return () => (active = false);
   });
+
+  // Where Back leads in the Android app: the page this one was opened from
+  // (Système → Intégrations → Back → Système). A section chosen in the menu
+  // starts a new trail, so Back from it goes home; at home the app leaves
+  // the dashboard. The app calls window.moliBack().
+  let trail = [];
+  let fromMenu = false;
+  $effect(() => {
+    const here = route;
+    if (here === '') trail = [];
+    else if (fromMenu) trail = [here];
+    else if (trail.at(-2) === here) trail.pop();
+    else if (trail.at(-1) !== here) trail.push(here);
+    fromMenu = false;
+  });
+  onMount(() => {
+    window.moliBack = () => {
+      if (trail.length > 1) {
+        trail.pop();
+        location.hash = '#/' + trail.at(-1);
+        return true;
+      }
+      if (route !== '') {
+        trail = [];
+        location.hash = '#/';
+        return true;
+      }
+      return false;
+    };
+    return () => delete window.moliBack;
+  });
 </script>
 
 <div class="maison" data-theme={theme} data-menu={menu.position} data-shape={menu.shape} style={look.style || undefined}>
   {#if look.wallpaper}<div class="wallpaper" style:background={look.wallpaper} aria-hidden="true"></div>{/if}
-  <nav class="rail" aria-label={t('commun.nav.aria')}>
+  <nav class="rail" aria-label={t('commun.nav.aria')} onclickcapture={() => (fromMenu = true)}>
     <a class="brand" href="#/" aria-label={t('commun.nav.logo')}>
       <svg viewBox="0 0 32 32" aria-hidden="true">
         <circle cx="16" cy="16" r="15" fill="var(--sun)" />
