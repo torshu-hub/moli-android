@@ -14,4 +14,18 @@
     <string name="pin_invalid">6 to 8 digits</string>
     <string name="key_failed">The protected key cannot be read.</string>
     <string name="service_running">Moli is running on this tablet.</string>
+    <string name="backup">Back up the house</string>
+    <string name="backup_done">Backup saved.</string>
+    <string name="backup_failed">The backup failed: nothing changed.</string>
+    <string name="restore">Restore a backup</string>
+    <string name="restore_message">The backup holds no key: paste the master key kept with it, and the house code. The previous setup is put aside, not erased.</string>
+    <string name="restore_key_field">Master key (64 characters)</string>
+    <string name="restore_key_invalid">64 characters, digits and letters a to f</string>
+    <string name="restore_done">House restored: Moli restarts.</string>
+    <string name="restore_failed">The restore failed: the house did not change.</string>
+    <string name="key_title">Master key and code</string>
+    <string name="key_message">Keep it elsewhere (a password manager): without the master key, a backup cannot be read.</string>
+    <string name="key_master">Master key:</string>
+    <string name="key_copy">Copy the key</string>
+    <string name="key_copied">Key copied.</string>
 </resources>

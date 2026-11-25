@@ -41,6 +41,19 @@ final class ProtectedKey {
         new SecureRandom().nextBytes(raw);
         StringBuilder master = new StringBuilder(64);
         for (byte b : raw) master.append(String.format(Locale.ROOT, "%02x", b & 255));
+        store(context, master.toString(), pin);
+    }
+
+    /**
+     * The key and code of a house restored from a backup (the key the owner
+     * kept, 64 hexadecimal digits), in place of this one's.
+     */
+    static synchronized void replace(Context context, String master, String pin) throws Exception {
+        if (!master.matches("[0-9a-f]{64}") || !pin.matches("[0-9]{6,8}")) throw new IllegalArgumentException("invalid");
+        store(context, master, pin);
+    }
+
+    private static void store(Context context, String master, String pin) throws Exception {
         KeyStore store = keyStore();
         if (!store.containsAlias(ALIAS)) {
             KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
@@ -53,7 +66,7 @@ final class ProtectedKey {
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, (SecretKey) store.getKey(ALIAS, null));
         cipher.updateAAD(ALIAS.getBytes(StandardCharsets.UTF_8));
-        String record = new JSONObject().put("master", master.toString()).put("pin", pin).toString();
+        String record = new JSONObject().put("master", master).put("pin", pin).toString();
         byte[] ciphertext = cipher.doFinal(record.getBytes(StandardCharsets.UTF_8));
         byte[] iv = cipher.getIV();
         ByteBuffer bytes = ByteBuffer.allocate(4 + iv.length + ciphertext.length);
