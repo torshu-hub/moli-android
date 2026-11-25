@@ -24,6 +24,8 @@ import java.util.concurrent.Executors;
  * management screen.
  */
 public final class DashboardActivity extends Activity {
+    /** The dashboard page to open (a route such as `integrations`), else the home page. */
+    static final String ROUTE = "route";
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService probe = Executors.newSingleThreadExecutor();
     private WebView web;
@@ -41,7 +43,8 @@ public final class DashboardActivity extends Activity {
                         loaded = true;
                         waiting.setVisibility(View.GONE);
                         web.setVisibility(View.VISIBLE);
-                        web.loadUrl("http://127.0.0.1:" + port + "/");
+                        String route = getIntent().getStringExtra(ROUTE);
+                        web.loadUrl("http://127.0.0.1:" + port + "/" + (route != null && route.matches("[a-z/-]{1,64}") ? "#/" + route : ""));
                     } else {
                         handler.postDelayed(this, 500);
                     }

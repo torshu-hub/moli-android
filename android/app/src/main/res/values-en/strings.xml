@@ -9,7 +9,6 @@
     <string name="stop">Stop</string>
     <string name="open_dashboard">Open Moli</string>
     <string name="integrations">Integrations</string>
-    <string name="integrations_empty">No integration to configure yet.</string>
     <string name="pin_title">House code</string>
     <string name="pin_message">6 to 8 digits. The dashboard asks for it to confirm what commits the house.</string>
     <string name="pin_invalid">6 to 8 digits</string>

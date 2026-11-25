@@ -69,7 +69,7 @@ public final class ManagementActivity extends Activity {
         open = button(root, R.string.open_dashboard, () ->
                 startActivity(new Intent(this, DashboardActivity.class)));
         button(root, R.string.integrations, () ->
-                startActivity(new Intent(this, IntegrationsActivity.class)));
+                startActivity(new Intent(this, DashboardActivity.class).putExtra(DashboardActivity.ROUTE, "integrations")));
         setContentView(root);
         // A house already set up opens straight on Moli; this screen stays
         // one Back away.
