@@ -1,7 +1,7 @@
 <script>
   import '@fontsource-variable/figtree';
   import './maison.css';
-  import { onMount, untrack } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { flip } from 'svelte/animate';
   import { scale } from 'svelte/transition';
   import { home, hub, start, value, readPref, savePref, watches, hidden, reloadLayout, deviceKind } from './lib/home.svelte.js';
@@ -211,6 +211,23 @@
   }
 
   const page = $derived(route.split('/')[0] ?? '');
+
+  // A section opened from the menu starts at its top (the window keeps the
+  // previous page's scroll otherwise). A route met again through Back/Forward
+  // keeps the browser's own scroll restoration; sub-routes are left alone.
+  let shownPage;
+  $effect(() => {
+    const returning = history.state?.moliRoute === route;
+    history.replaceState({ ...history.state, moliRoute: route }, '');
+    const changed = shownPage !== undefined && shownPage !== page;
+    shownPage = page;
+    if (!changed || returning) return;
+    let active = true;
+    tick().then(() => {
+      if (active) window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+    });
+    return () => (active = false);
+  });
 </script>
 
 <div class="maison" data-theme={theme} data-menu={menu.position} data-shape={menu.shape} style={look.style || undefined}>
@@ -564,8 +581,8 @@
     box-shadow: inset 0 0 0 1px var(--line);
   }
 
-  /* A short screen: tighter tabs, more of them in view. */
-  @media (min-width: 761px) and (max-height: 860px) {
+  /* A short screen, or a tablet held upright: tighter tabs, more of them in view. */
+  @media (min-width: 761px) and (max-height: 860px), (min-width: 761px) and (max-width: 900px) {
     .rail {
       gap: 10px;
       padding-top: 14px;
@@ -578,6 +595,59 @@
     .rail a,
     .rail button {
       padding: 6px 0 5px;
+    }
+
+    /* A menu down the side of a tablet in landscape (800 px tall): every
+       tab in view, none hidden in a list that scrolls without a sign of it.
+       Tighter tabs, and Thème · Système · Atelier as one row of icons. */
+    .maison:not([data-menu='top']):not([data-menu='bottom']) .rail {
+      gap: 6px;
+      padding-top: 10px;
+      padding-bottom: calc(8px + env(safe-area-inset-bottom));
+    }
+
+    .maison:not([data-menu='top']):not([data-menu='bottom']) .brand svg {
+      width: 30px;
+      height: 30px;
+    }
+
+    .maison:not([data-menu='top']):not([data-menu='bottom']) .rail ul {
+      margin-top: 0;
+      padding: 2px 0 6px;
+      gap: 0;
+    }
+
+    .maison:not([data-menu='top']):not([data-menu='bottom']) .rail ul a {
+      gap: 1px;
+      padding: 1px 0;
+    }
+
+    .maison:not([data-menu='top']):not([data-menu='bottom']) .rail ul .glyph {
+      height: 26px;
+    }
+
+    .maison:not([data-menu='top']):not([data-menu='bottom']) .rail ul .label {
+      font-size: 11px;
+    }
+
+    .maison:not([data-menu='top']):not([data-menu='bottom']) .rail-foot {
+      display: flex;
+      gap: 0;
+    }
+
+    .maison:not([data-menu='top']):not([data-menu='bottom']) .rail-foot a,
+    .maison:not([data-menu='top']):not([data-menu='bottom']) .rail-foot button {
+      width: 32px;
+      padding: 6px 0;
+    }
+
+    .maison:not([data-menu='top']):not([data-menu='bottom']) .rail-foot .label {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
     }
   }
 
