@@ -14,6 +14,7 @@
 - L'API de Moli répond 403 sans en-tête `Host` connu (garde contre le DNS rebinding). → `Host: 127.0.0.1:<port>` (`plugs.rs`, `host()`).
 - Avec un VPN, la route par défaut est celle du VPN. → Adresse et box lues sur le lien Wi-Fi/Ethernet (`Setup.homeAddress`, `Setup.homeGateway`).
 - `/proc/net/arp` illisible pour une appli depuis Android 10 : pas de MAC, pas de fabricant par préfixe MAC. → Ne pas construire dessus.
+- Un numéro d'appareil ajouté (`meross-mss310-2`) libéré par un retrait est redonné au suivant, qui hérite de la mémoire de l'ancien (nom, valeurs) : fiche fantôme. → Ne jamais libérer un numéro sans passer par l'officiel (mission « Retrait propre »).
 - La garde : `protected_devices` demande aussi le code au tableau de bord ouvert sans code (origine « foyer »). → Vérifier comment la tablette ouvre le tableau de bord avant de protéger un appareil.
 
 ## Git, GitHub, APK
