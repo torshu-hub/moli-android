@@ -3,6 +3,7 @@
 # exists. Until then, an APK signed with the runner's debug key, for a trial.
 # From main, the APK is published at a fixed address (pre-release `apk`):
 # https://github.com/torshu-hub/moli-android/releases/download/apk/moli.apk
+# and under its build number, listed on https://github.com/torshu-hub/moli-android/releases/tag/apk
 name: android
 
 on:
@@ -147,7 +148,8 @@ jobs:
           if-no-files-found: error
 
   # From main only: the APK at a fixed address, replaced at each build, for the
-  # tablet (no GitHub account, no zip). The owner's signed APK when it exists,
+  # tablet (no GitHub account, no zip), and under its build number
+  # (`moli-56.apk`, the previous numbered one removed). The owner's signed APK when it exists,
   # else the trial one (debug key: uninstall the previous one first).
   publish:
     needs: [apk, sign]
@@ -196,6 +198,12 @@ jobs:
             gh release create apk --prerelease --target "$GITHUB_SHA" --title "Moli Android (dernière APK de main)" --notes "$notes"
           # The tag follows the APK's source.
           gh api -X PATCH "repos/$GH_REPO/git/refs/tags/apk" -f sha="$GITHUB_SHA" -F force=true > /dev/null
-          gh release upload apk moli.apk --clobber
-          gh release edit apk --notes "$notes"
-          echo "APK publiée : https://github.com/$GH_REPO/releases/download/apk/moli.apk" >> "$GITHUB_STEP_SUMMARY"
+          # The same APK under its build number: a download says which one it is.
+          numbered="moli-$GITHUB_RUN_NUMBER.apk"
+          cp moli.apk "$numbered"
+          gh release upload apk moli.apk "$numbered" --clobber
+          for old in $(gh release view apk --json assets -q '.assets[].name' | grep -E '^moli-[0-9]+\.apk$' | grep -vx "$numbered"); do
+            gh release delete-asset apk "$old" -y
+          done
+          gh release edit apk --title "Moli Android $GITHUB_RUN_NUMBER (dernière APK de main)" --notes "$notes"
+          echo "APK publiée : https://github.com/$GH_REPO/releases/download/apk/$numbered (et moli.apk)" >> "$GITHUB_STEP_SUMMARY"
