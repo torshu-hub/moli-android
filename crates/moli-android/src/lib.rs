@@ -2,6 +2,7 @@
 //! and stops the official engine ([`moli_os::hosted`]), with no logic of its
 //! own; `Setup.java` is the integrations screen ([`setup`]).
 
+pub mod meross;
 pub mod setup;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -164,7 +165,8 @@ fn answer(env: &mut JNIEnv<'_>, work: impl FnOnce() -> anyhow::Result<String>) -
 
 /// `static native String call(String action, String config, String key, String body)`:
 /// one entry point for the screen, `action` naming what to do (keeps the
-/// JNI surface to one symbol). Never prints a secret, never returns one.
+/// JNI surface to one symbol). Never prints a secret; returns one only for
+/// `meross_key`, the account's key the person asked for (to paste it).
 // SAFETY: name and signature match Setup.java; this library ships in the APK.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_io_moli_android_Setup_call(
@@ -233,6 +235,7 @@ fn call(action: &str, config: &Path, key: String, body: &str) -> anyhow::Result<
             setup::forget(config, &key, &s.instance, &s.names)?;
             String::new()
         }
+        "meross_key" => meross::key(&serde_json::from_str(body)?)?.to_string(),
         other => anyhow::bail!("unknown action {other:?}"),
     })
 }

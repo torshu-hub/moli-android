@@ -1675,10 +1675,16 @@ name = "moli-android"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
+ "base64",
+ "http",
  "jni",
+ "md-5",
+ "moli-net",
  "moli-os",
  "moli-profile",
  "moli-runtime",
+ "ring",
  "serde",
  "serde_json",
  "tokio",

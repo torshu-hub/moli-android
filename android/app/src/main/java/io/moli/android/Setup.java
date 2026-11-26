@@ -29,6 +29,16 @@ final class Setup {
         return new JSONArray(call("drivers", config(context).getPath(), "", ""));
     }
 
+    /**
+     * The key of a Meross account (meross.rs): `{"key": …}`, or Meross's
+     * refusal `{"status": …, "info": …}`. Network: never on the UI thread.
+     */
+    static JSONObject merossKey(Context context, String email, String password, String code) throws Exception {
+        JSONObject body = new JSONObject().put("email", email).put("password", password);
+        if (code != null && !code.trim().isEmpty()) body.put("code", code.trim());
+        return new JSONObject(call("meross_key", config(context).getPath(), "", body.toString()));
+    }
+
     /** Which of `names` the vault holds for `instance` (never their values). */
     static JSONArray stored(Context context, String instance, JSONArray names) throws Exception {
         if (names.length() == 0) return new JSONArray();
