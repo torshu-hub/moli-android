@@ -3399,6 +3399,25 @@ impl moli_api::device_setup::DeviceSetup for CountedDeviceSetup {
         self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Box::pin(async { Err(moli_api::device_setup::SetupError::new("silent")) })
     }
+    fn remove(
+        &self,
+        _instance: String,
+        _actor: String,
+    ) -> BoxFuture<
+        '_,
+        Result<moli_api::device_setup::DeviceRemoved, moli_api::device_setup::SetupError>,
+    > {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Box::pin(async { Err(moli_api::device_setup::SetupError::new("not_found")) })
+    }
+    fn forget(
+        &self,
+        _instance: String,
+        _device: String,
+    ) -> BoxFuture<'_, Result<(), moli_api::device_setup::SetupError>> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Box::pin(async { Err(moli_api::device_setup::SetupError::new("device_online")) })
+    }
 }
 
 #[tokio::test]
@@ -3416,6 +3435,11 @@ async fn only_a_person_adds_a_device_never_an_agent_nor_the_tablet_without_its_c
         ("/api/integrations/devices/probe", &probe),
         ("/api/integrations/devices", &install),
     ];
+    // Removing a device, forgetting one that does not answer: a person's too.
+    let takes = [
+        "/api/integrations/devices/meross-mss310-1",
+        "/api/integrations/devices/meross-mss310-1/00000000000000000000000000000001",
+    ];
     let addr = serve(&hub, &options).await;
     for (who, headers) in [
         // An agent through the API (`Api`), and one that says it is MCP.
@@ -3426,6 +3450,18 @@ async fn only_a_person_adds_a_device_never_an_agent_nor_the_tablet_without_its_c
     ] {
         for (route, body) in routes {
             let (status, body) = request_with(&addr, "POST", route, Some(body), headers).await;
+            assert_eq!(status, 403, "{who} reached {route}: {body}");
+        }
+    }
+    // The same for taking one out, on a server of its own (each caller's budget).
+    let addr = serve(&hub, &options).await;
+    for (who, headers) in [
+        ("agent", ""),
+        ("mcp", "x-moli-origin: mcp\r\n"),
+        ("tablet", "x-moli-origin: ui\r\n"),
+    ] {
+        for route in takes {
+            let (status, body) = request_with(&addr, "DELETE", route, None, headers).await;
             assert_eq!(status, 403, "{who} reached {route}: {body}");
         }
     }
@@ -3445,4 +3481,13 @@ async fn only_a_person_adds_a_device_never_an_agent_nor_the_tablet_without_its_c
         assert!(body.contains("silent"), "{route}: {body}");
     }
     assert_eq!(setup.0.load(std::sync::atomic::Ordering::Relaxed), 2);
+    for (route, expected, code) in [
+        (takes[0], 404, "not_found"),
+        (takes[1], 409, "device_online"),
+    ] {
+        let (status, body) = request_with(&addr, "DELETE", route, None, &human).await;
+        assert_eq!(status, expected, "{route}: {body}");
+        assert!(body.contains(code), "{route}: {body}");
+    }
+    assert_eq!(setup.0.load(std::sync::atomic::Ordering::Relaxed), 4);
 }

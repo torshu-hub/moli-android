@@ -15,7 +15,8 @@
 //! The house: a plug Moli runs is the device `<instance>:<uuid>` of
 //! `/api/devices` (the profile's identity is the plug's uuid), wherever it
 //! was added from. Renaming goes through the dashboard's own call
-//! (`PUT /api/labels/{id}`).
+//! (`PUT /api/labels/{id}`); removing a plug, or forgetting a device that no
+//! longer answers, through Moli's own routes (`DELETE /api/integrations/devices/…`).
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
@@ -292,31 +293,57 @@ async fn add_to(request: &Add) -> anyhow::Result<Json> {
     Ok(Json::Object(outcomes))
 }
 
-/// « Retirer »: takes `instance` out of the devices added from the
-/// dashboard (`data/devices-added.json`, Moli's own file, rewritten whole
-/// as Moli does). Moli must be stopped meanwhile, and started again after.
-/// Errors: `not_added_here` (the instance is not in that file: it is in
-/// `moli.toml`, or gone), `unreadable` (a file Moli did not write is left as it is).
-pub fn remove_added(config: &std::path::Path, instance: &str) -> anyhow::Result<()> {
-    let path = crate::setup::data_dir(config)?.join("devices-added.json");
-    let bytes = std::fs::read(&path).map_err(|_| anyhow::anyhow!("not_added_here"))?;
-    let mut file: Json =
-        serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("unreadable"))?;
-    let devices = file["devices"]
-        .as_array_mut()
-        .ok_or_else(|| anyhow::anyhow!("unreadable"))?;
-    let before = devices.len();
-    devices.retain(|d| d["instance"].as_str() != Some(instance));
-    anyhow::ensure!(devices.len() < before, "not_added_here");
-    let aside = path.with_extension("json.tmp");
-    {
-        use std::io::Write as _;
-        let mut out = std::fs::File::create(&aside)?;
-        out.write_all(&serde_json::to_vec_pretty(&file)?)?;
-        out.sync_all()?;
+/// « Retirer » / « Oublier »: where Moli listens, the house's code, and
+/// what to take out.
+#[derive(Deserialize)]
+pub struct Take {
+    pub port: u16,
+    pub pin: String,
+    /// The instance to remove, or the one holding the device to forget.
+    pub instance: String,
+    /// Set: forget this device (its identity, `instance:` left out) instead.
+    #[serde(default)]
+    pub device: Option<String>,
+}
+
+impl std::fmt::Debug for Take {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Take")
+            .field("instance", &self.instance)
+            .field("device", &self.device)
+            .finish_non_exhaustive()
     }
-    std::fs::rename(&aside, &path)?;
-    Ok(())
+}
+
+/// « Retirer »: Moli's own route, as the dashboard calls it
+/// (`DELETE /api/integrations/devices/{instance}`; with `device`,
+/// `…/{instance}/{device}` forgets a device that does not answer). Moli
+/// stops the plug, takes it out of its file and forgets its key, and keeps
+/// its name, room and history for its return. `Ok("")` when done; else
+/// Moli's code (`not_found`: not added from the dashboard, `device_online`…).
+pub fn take(request: &Take) -> anyhow::Result<String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(take_from(request))
+}
+
+async fn take_from(request: &Take) -> anyhow::Result<String> {
+    let moli = Moli::open(request.port, &request.pin).await?;
+    let path = match &request.device {
+        Some(device) => format!("/api/integrations/devices/{}/{device}", request.instance),
+        None => format!("/api/integrations/devices/{}", request.instance),
+    };
+    let answer = moli.call(Method::DELETE, &path, &Json::Null).await;
+    moli.close().await;
+    let (status, body) = answer?;
+    Ok(if status / 100 == 2 {
+        String::new()
+    } else {
+        body["error"]
+            .as_str()
+            .map_or_else(|| format!("HTTP {status}"), str::to_owned)
+    })
 }
 
 /// « Ce qui est déjà en place »: where Moli listens and the house's code.
@@ -368,27 +395,30 @@ fn installed_from(file: &Json, snapshot: Option<&Json>) -> Json {
         if !profile.starts_with("meross-") {
             continue;
         }
-        let names: Vec<&str> = snapshot
+        // What the house holds under this instance: one device, or, in a
+        // house from before the clean removal, a device that does not answer
+        // left by another plug (`online: false`, to forget).
+        let devices: Vec<Json> = snapshot
             .and_then(|s| s["devices"].as_array())
             .into_iter()
             .flatten()
-            .filter(|d| {
-                d["id"]
-                    .as_str()
-                    .and_then(|id| id.split_once(':'))
-                    .is_some_and(|(i, _)| i == instance)
-            })
             .filter_map(|d| {
-                d["label"]["name"]
+                let (i, native) = d["id"].as_str()?.split_once(':')?;
+                let name = d["label"]["name"]
                     .as_str()
-                    .or_else(|| d["native_name"].as_str())
+                    .or_else(|| d["native_name"].as_str())?;
+                (i == instance).then(|| {
+                    json!({ "device": native, "name": name, "online": d["online"] != json!(false) })
+                })
             })
             .collect();
+        let names: Vec<&str> = devices.iter().filter_map(|d| d["name"].as_str()).collect();
         plugs.push(json!({
             "instance": instance,
             "profile": profile,
             "host": added["host"],
             "name": names.join(", "),
+            "devices": devices,
         }));
     }
     json!({ "plugs": plugs, "moli": snapshot.is_some() })
@@ -508,44 +538,25 @@ mod tests {
             { "instance": "meross-2", "profile": "meross-mss310", "host": "192.168.1.11" },
         ]});
         let snapshot = json!({ "devices": [
-            { "id": "meross-1:aaaa", "label": { "name": "Salon" }, "native_name": "Smart Plug" },
+            { "id": "meross-1:aaaa", "label": { "name": "Salon" }, "native_name": "Smart Plug", "online": true },
+            { "id": "meross-1:cccc", "label": { "name": "Chaudière" }, "native_name": "Smart Plug", "online": false },
             { "id": "meross-10:bbbb", "native_name": "Autre" },
         ]});
         let listed = installed_from(&file, Some(&snapshot));
         assert_eq!(listed["moli"], true);
         let plugs = listed["plugs"].as_array().unwrap();
         assert_eq!(plugs.len(), 2);
-        assert_eq!(plugs[0]["name"], "Salon");
+        assert_eq!(plugs[0]["name"], "Salon, Chaudière");
         assert_eq!(plugs[0]["host"], "192.168.1.10");
+        // The one that does not answer is told apart: it can be forgotten.
+        assert_eq!(plugs[0]["devices"][0]["online"], true);
+        assert_eq!(plugs[0]["devices"][1]["device"], "cccc");
+        assert_eq!(plugs[0]["devices"][1]["online"], false);
         // Not running (or Moli silent): listed all the same, without a name.
         assert_eq!(plugs[1]["name"], "");
         assert_eq!(installed_from(&file, None)["moli"], false);
     }
 
-    #[test]
-    fn removing_a_plug_keeps_the_others_and_the_file_format() {
-        let dir = std::env::temp_dir().join(format!("moli-remove-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let config = dir.join("moli.toml");
-        std::fs::write(&config, "").unwrap();
-        let file = dir.join("devices-added.json");
-        std::fs::write(
-            &file,
-            r#"{"version":1,"devices":[{"instance":"meross-1","profile":"meross-mss310","host":"192.168.1.10"},{"instance":"meross-2","profile":"meross-mss310","host":"192.168.1.11"}]}"#,
-        )
-        .unwrap();
-        remove_added(&config, "meross-1").unwrap();
-        let left: Json = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-        assert_eq!(left["version"], 1);
-        assert_eq!(left["devices"].as_array().unwrap().len(), 1);
-        assert_eq!(left["devices"][0]["instance"], "meross-2");
-        // Gone already, or never added here: said, nothing rewritten.
-        assert_eq!(
-            remove_added(&config, "meross-1").unwrap_err().to_string(),
-            "not_added_here"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
     use super::*;
 
     use std::sync::{Arc, Mutex};
@@ -710,6 +721,32 @@ mod tests {
                 }),
             )
             .route(
+                "/api/integrations/devices/{instance}",
+                axum::routing::delete(
+                    |State(seen): State<Seen>, axum::extract::Path(instance): axum::extract::Path<String>, headers: HeaderMap| async move {
+                        record(&seen, &format!("remove {instance}"), &headers, "");
+                        if instance == "meross-1" {
+                            axum::Json(json!({ "instance": instance })).into_response()
+                        } else {
+                            (StatusCode::NOT_FOUND, axum::Json(json!({ "error": "not_found" }))).into_response()
+                        }
+                    },
+                ),
+            )
+            .route(
+                "/api/integrations/devices/{instance}/{device}",
+                axum::routing::delete(
+                    |State(seen): State<Seen>, axum::extract::Path((instance, device)): axum::extract::Path<(String, String)>, headers: HeaderMap| async move {
+                        record(&seen, &format!("forget {instance} {device}"), &headers, "");
+                        if device == "ghost" {
+                            StatusCode::NO_CONTENT.into_response()
+                        } else {
+                            (StatusCode::CONFLICT, axum::Json(json!({ "error": "device_online" }))).into_response()
+                        }
+                    },
+                ),
+            )
+            .route(
                 "/api/devices",
                 axum::routing::get(|State(seen): State<Seen>, headers: HeaderMap| async move {
                     record(&seen, "devices", &headers, "");
@@ -794,6 +831,39 @@ mod tests {
             install,
             &json!({ "host": "192.168.1.10", "identity": UUID, "name": "Prise 192.168.1.10", "key": KEY })
         );
+    }
+
+    #[tokio::test]
+    async fn a_plug_is_removed_or_forgotten_by_moli_itself() {
+        let (port, seen) = moli().await;
+        let take = |instance: &str, device: Option<&str>| Take {
+            port,
+            pin: "482913".into(),
+            instance: instance.into(),
+            device: device.map(str::to_owned),
+        };
+        assert_eq!(take_from(&take("meross-1", None)).await.unwrap(), "");
+        assert_eq!(
+            take_from(&take("hue-1", None)).await.unwrap(),
+            "not_found",
+            "not added from the dashboard: said, nothing else"
+        );
+        assert_eq!(
+            take_from(&take("meross-2", Some("ghost"))).await.unwrap(),
+            ""
+        );
+        assert_eq!(
+            take_from(&take("meross-2", Some("alive"))).await.unwrap(),
+            "device_online"
+        );
+        let seen = seen.lock().unwrap();
+        let paths: Vec<&str> = seen.iter().map(|(p, ..)| p.as_str()).collect();
+        assert!(paths.contains(&"remove meross-1"));
+        assert!(paths.contains(&"forget meross-2 ghost"));
+        // As a person at the dashboard: its session, its origin.
+        let removal = seen.iter().find(|(p, ..)| p == "remove meross-1").unwrap();
+        assert_eq!(removal.2.as_deref(), Some("moli_session=fictional"));
+        assert_eq!(removal.3.as_deref(), Some("ui"));
     }
 
     #[tokio::test]

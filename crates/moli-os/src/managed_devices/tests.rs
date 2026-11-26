@@ -45,6 +45,8 @@ fn hub(dir: &Path) -> Hub {
 struct Plug {
     port: u16,
     orders: Arc<AtomicUsize>,
+    /// Who answers at its address: a test changes it to put another device there.
+    uuid: Arc<std::sync::Mutex<String>>,
     task: JoinHandle<()>,
 }
 
@@ -56,6 +58,8 @@ impl Plug {
         let port = listener.local_addr().unwrap().port();
         let orders = Arc::new(AtomicUsize::new(0));
         let counted = orders.clone();
+        let uuid = Arc::new(std::sync::Mutex::new(IDENTITY.to_owned()));
+        let who = uuid.clone();
         let task = tokio::spawn(async move {
             while let Ok((mut tcp, _)) = listener.accept().await {
                 let mut request = Vec::new();
@@ -109,6 +113,8 @@ impl Plug {
                         "Appliance.System.All" => {
                             let mut all = fixture("all");
                             all["payload"]["all"]["system"]["hardware"]["type"] = "mss315".into();
+                            all["payload"]["all"]["system"]["hardware"]["uuid"] =
+                                who.lock().unwrap().clone().into();
                             all
                         }
                         "Appliance.Control.Electricity" => fixture("electricity"),
@@ -128,7 +134,12 @@ impl Plug {
                 let _ = tcp.write_all(answer.as_bytes()).await;
             }
         });
-        Self { port, orders, task }
+        Self {
+            port,
+            orders,
+            uuid,
+            task,
+        }
     }
 }
 
@@ -352,6 +363,140 @@ async fn an_address_a_followed_device_left_is_free() {
     assert_eq!(free.status, "recognized");
     assert_eq!(free.existing_instance, None);
     cancel.cancel();
+    plug.task.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const OTHER: &str = "00000000000000000000000000000002";
+
+fn is_answering(hub: &Hub, device: &str) -> bool {
+    hub.device(&DeviceId::from(device))
+        .is_some_and(|view| view.online == Some(true))
+}
+
+/// A removed plug leaves nothing running or listed, but its name stays for
+/// the day it comes back; another plug never takes its number (and so never
+/// its memory), and the same plug takes it again.
+#[tokio::test]
+async fn a_removed_plug_keeps_its_number_for_its_return() {
+    let plug = Plug::start("").await;
+    let (dir, config) = house("");
+    let hub = hub(&dir);
+    let cancel = CancellationToken::new();
+    let setup = Manager::at_port(hub.clone(), &config, cancel.clone(), plug.port);
+
+    let first = setup
+        .install(install(IDENTITY, None), "a person".into())
+        .await
+        .unwrap();
+    assert_eq!(first.instance, "meross-mss310-1");
+    let device = DeviceId::from(first.device.as_str());
+
+    // Removed: not started, not listed, not in the house, key and file clean.
+    let removed = setup
+        .remove("meross-mss310-1".into(), "a person".into())
+        .await
+        .unwrap();
+    assert_eq!(removed.instance, "meross-mss310-1");
+    assert!(read_store(&dir.join(FILE)).0.is_empty());
+    assert!(hub.device(&device).is_none());
+    assert!(hub.snapshot().drivers.is_empty());
+    let gone = setup
+        .remove("meross-mss310-1".into(), "a person".into())
+        .await
+        .unwrap_err();
+    assert_eq!(gone.code, "not_found");
+    let again = setup.probe(probe(LOOPBACK, None)).await.unwrap();
+    assert_eq!(
+        again.existing_instance, None,
+        "a removed plug is not in the house"
+    );
+
+    // Another plug at that address: another number, not the old memory.
+    *plug.uuid.lock().unwrap() = OTHER.to_owned();
+    let other = setup
+        .install(install(OTHER, None), "a person".into())
+        .await
+        .unwrap();
+    assert_eq!(other.instance, "meross-mss310-2");
+    setup
+        .remove("meross-mss310-2".into(), "a person".into())
+        .await
+        .unwrap();
+
+    // The first one comes back: its number, its device, its name.
+    *plug.uuid.lock().unwrap() = IDENTITY.to_owned();
+    assert!(
+        hub.remembered_devices().contains(&device),
+        "the house remembers it"
+    );
+    let back = setup
+        .install(install(IDENTITY, None), "a person".into())
+        .await
+        .unwrap();
+    assert_eq!(back.instance, "meross-mss310-1");
+    assert_eq!(back.device, first.device);
+    assert_eq!(read_store(&dir.join(FILE)).0.len(), 1);
+
+    cancel.cancel();
+    setup.shutdown().await;
+    plug.task.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What the house remembers of a plug that does not answer can be forgotten,
+/// and its number is then free; one that answers is refused.
+#[tokio::test]
+async fn a_device_that_does_not_answer_can_be_forgotten() {
+    let plug = Plug::start("").await;
+    let (dir, config) = house("");
+    let hub = hub(&dir);
+    let cancel = CancellationToken::new();
+    let setup = Manager::at_port(hub.clone(), &config, cancel.clone(), plug.port);
+
+    let added = setup
+        .install(install(IDENTITY, None), "a person".into())
+        .await
+        .unwrap();
+    for _ in 0..80 {
+        if is_answering(&hub, &added.device) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(is_answering(&hub, &added.device));
+    let online = setup
+        .forget("meross-mss310-1".into(), IDENTITY.into())
+        .await
+        .unwrap_err();
+    assert_eq!(online.code, "device_online");
+
+    setup
+        .remove("meross-mss310-1".into(), "a person".into())
+        .await
+        .unwrap();
+    let device = DeviceId::from(added.device.as_str());
+    assert!(hub.remembered_devices().contains(&device));
+    setup
+        .forget("meross-mss310-1".into(), IDENTITY.into())
+        .await
+        .unwrap();
+    assert!(!hub.remembered_devices().contains(&device));
+    let unknown = setup
+        .forget("meross-mss310-1".into(), IDENTITY.into())
+        .await
+        .unwrap_err();
+    assert_eq!(unknown.code, "not_found");
+    // Its number is free again, for whoever comes.
+    *plug.uuid.lock().unwrap() = OTHER.to_owned();
+    let next = setup
+        .install(install(OTHER, None), "a person".into())
+        .await
+        .unwrap();
+    assert_eq!(next.instance, "meross-mss310-1");
+
+    cancel.cancel();
+    setup.shutdown().await;
     plug.task.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -167,6 +167,7 @@ impl IntoResponse for SetupError {
             "duplicate_instance"
             | "duplicate_gateway"
             | "duplicate_device"
+            | "device_online"
             | "identity_changed"
             | "gateway_disabled"
             | "mode_conflict"

@@ -50,6 +50,8 @@ POST   /api/integrations/airzone/{instance}/withdraw             humain non
 POST   /api/integrations/airzone/{instance}/mode                 humain non
 POST   /api/integrations/devices/probe                           humain non
 POST   /api/integrations/devices                                 humain non
+DELETE /api/integrations/devices/{instance}                      humain non
+DELETE /api/integrations/devices/{instance}/{device}             humain non
 GET    /api/integrations/tuya-cloud        foyer   non
 PUT    /api/integrations/tuya-cloud        foyer   non
 GET    /api/integrations/overkiz-cloud     humain  non  # owner: independent cloud session status

@@ -337,6 +337,14 @@ pub enum LabelError {
     Guarded(String),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ForgetError {
+    #[error("the device answers")]
+    Online,
+    #[error("could not persist labels: {0}")]
+    Persist(#[from] std::io::Error),
+}
+
 /// A partial label update: `None` keeps a field, `Some("")` clears it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct LabelPatch {
@@ -2388,6 +2396,77 @@ impl Hub {
         self.emit(Event::DriverUnregistered {
             instance: instance.clone(),
         });
+    }
+
+    /// Takes an already stopped instance out of the house, keeping what a
+    /// person gave its devices: their name and room (and the history, which is
+    /// kept by device) come back if the same device is added again. Call only
+    /// after cancelling and awaiting its task.
+    pub fn retire_instance(&self, instance: &InstanceId) {
+        self.unregister_driver(instance);
+        let ids: Vec<DeviceId> = {
+            let model = self.read();
+            model
+                .devices
+                .keys()
+                .chain(model.cached_devices.keys())
+                .chain(model.restored.keys())
+                .chain(model.states.keys())
+                .filter(|id| &id.instance() == instance)
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        };
+        for id in ids {
+            self.remove_device(&id);
+        }
+    }
+
+    /// Devices the house still remembers, running or not: what a driver
+    /// published (this run or an earlier one) and what a person named.
+    #[must_use]
+    pub fn remembered_devices(&self) -> Vec<DeviceId> {
+        let model = self.read();
+        let ids: std::collections::BTreeSet<&DeviceId> = model
+            .devices
+            .keys()
+            .chain(model.labels.keys())
+            .chain(model.cached_devices.keys())
+            .chain(model.restored.keys())
+            .chain(model.states.keys())
+            .collect();
+        ids.into_iter().cloned().collect()
+    }
+
+    /// Forgets a device that is not answering: its definition, its last values
+    /// and its name and room. `Ok(false)`: the house knows nothing of it;
+    /// `Err(Online)`: it answers, so it is not forgotten.
+    pub async fn forget_device(&self, id: &DeviceId) -> Result<bool, ForgetError> {
+        let _guard = self.0.label_write.lock().await;
+        let (known, mut labels) = {
+            let model = self.read();
+            if model.availability.get(id) == Some(&true) {
+                return Err(ForgetError::Online);
+            }
+            let known = model.devices.contains_key(id)
+                || model.cached_devices.contains_key(id)
+                || model.restored.contains_key(id)
+                || model.states.contains_key(id)
+                || model.labels.contains_key(id);
+            (known, model.labels.clone())
+        };
+        if !known {
+            return Ok(false);
+        }
+        if labels.remove(id).is_some() {
+            if let Some(path) = &self.0.opts.labels_path {
+                labels::save(path, &labels).await?;
+            }
+            self.write().labels = labels;
+        }
+        self.remove_device(id);
+        Ok(true)
     }
 
     pub(crate) fn set_driver_status(&self, instance: &InstanceId, status: DriverStatus) {
