@@ -3,6 +3,7 @@
 //! own; `Setup.java` is the integrations screen ([`setup`]).
 
 pub mod meross;
+pub mod plugs;
 pub mod setup;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -236,6 +237,8 @@ fn call(action: &str, config: &Path, key: String, body: &str) -> anyhow::Result<
             String::new()
         }
         "meross_key" => meross::key(&serde_json::from_str(body)?)?.to_string(),
+        "meross_find" => plugs::find(&serde_json::from_str(body)?)?.to_string(),
+        "meross_add" => plugs::add(&serde_json::from_str(body)?)?.to_string(),
         other => anyhow::bail!("unknown action {other:?}"),
     })
 }

@@ -642,6 +642,10 @@ public final class IntegrationsActivity extends Activity {
 
         /** The Meross account's key, read once (DECISIONS 7); kept while the form is open. */
         private String accountKey;
+        /** The account's devices (uuid, name, model, online), then what became of each. */
+        private JSONArray accountDevices = new JSONArray();
+        private final Map<String, String> imported = new HashMap<>();
+        private boolean importing;
         private boolean askCode;
 
         /**
@@ -691,6 +695,8 @@ public final class IntegrationsActivity extends Activity {
                         String key = got == null ? null : got.optString("key", null);
                         if (key != null && !key.isEmpty()) {
                             accountKey = key;
+                            JSONArray listed = got.optJSONArray("devices");
+                            if (listed != null) accountDevices = listed;
                             password.setText("");
                             copy(key);
                             box.removeAllViews();
@@ -728,6 +734,101 @@ public final class IntegrationsActivity extends Activity {
             lp.setMargins(s.dp(12), 0, 0, 0);
             actions.addView(go, lp);
             box.addView(actions, s.matchWrap(0, s.dp(12), 0, 0));
+            if (accountDevices.length() > 0) plugs(box);
+        }
+
+        /**
+         * The account's plugs, added in one go: found on the network by
+         * their uuid, added by « Ajouter un appareil » with their Meross name.
+         */
+        private void plugs(LinearLayout box) {
+            IntegrationsActivity s = screen;
+            box.addView(s.text(s.getString(R.string.meross_plugs, accountDevices.length()), 16, INK, true), s.matchWrap(0, s.dp(18), 0, 0));
+            box.addView(s.text(s.getString(R.string.meross_plugs_help), 14, MUTED, false), s.matchWrap(0, s.dp(4), 0, 0));
+            LinearLayout list = s.column();
+            box.addView(list, s.matchWrap(0, s.dp(6), 0, 0));
+            Runnable fill = () -> {
+                list.removeAllViews();
+                for (int i = 0; i < accountDevices.length(); i++) {
+                    JSONObject d = accountDevices.optJSONObject(i);
+                    LinearLayout line = s.row();
+                    line.setPadding(0, s.dp(6), 0, s.dp(6));
+                    String model = d.optString("model");
+                    TextView name = s.text(d.optString("name") + (model.isEmpty() ? "" : "  ·  " + model), 15, INK, false);
+                    line.addView(name, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+                    String outcome = imported.get(d.optString("uuid"));
+                    if (outcome != null) {
+                        boolean good = outcome.equals("added") || outcome.equals("already");
+                        line.addView(s.text(words(outcome, d.optBoolean("online", true)), 13, good ? OK : WARN, true));
+                    }
+                    list.addView(line);
+                }
+            };
+            fill.run();
+            TextView progress = s.text("", 14, INFO, false);
+            progress.setVisibility(importing ? View.VISIBLE : View.GONE);
+            box.addView(progress, s.matchWrap(0, s.dp(8), 0, 0));
+            Button add = s.primary(s.getString(R.string.meross_add_all));
+            add.setEnabled(!importing);
+            box.addView(add, s.matchWrap(0, s.dp(10), 0, 0));
+            add.setOnClickListener(v -> {
+                importing = true;
+                add.setEnabled(false);
+                progress.setText(R.string.meross_finding);
+                progress.setVisibility(View.VISIBLE);
+                String key = accountKey;
+                JSONArray devices = accountDevices;
+                s.probe.execute(() -> {
+                    Map<String, String> outcomes = new HashMap<>();
+                    String failure = null;
+                    try {
+                        JSONArray uuids = new JSONArray();
+                        for (int i = 0; i < devices.length(); i++) uuids.put(devices.optJSONObject(i).optString("uuid"));
+                        JSONObject where = Setup.merossFind(s, key, uuids);
+                        JSONArray plugs = new JSONArray();
+                        Map<String, String> uuidAt = new HashMap<>();
+                        for (int i = 0; i < devices.length(); i++) {
+                            JSONObject d = devices.optJSONObject(i);
+                            String uuid = d.optString("uuid").toLowerCase(Locale.ROOT);
+                            String host = where.optString(uuid, null);
+                            if (host == null) { outcomes.put(d.optString("uuid"), "missing"); continue; }
+                            uuidAt.put(host, d.optString("uuid"));
+                            plugs.put(new JSONObject().put("host", host).put("name", d.optString("name")));
+                        }
+                        if (plugs.length() > 0) {
+                            s.handler.post(() -> progress.setText(R.string.meross_adding));
+                            JSONObject added = Setup.merossAdd(s, key, plugs);
+                            for (Map.Entry<String, String> e : uuidAt.entrySet()) {
+                                JSONObject o = added.optJSONObject(e.getKey());
+                                outcomes.put(e.getValue(), o == null ? "refused" : o.optString("outcome", "refused"));
+                            }
+                        }
+                    } catch (Exception e) {
+                        failure = String.valueOf(e.getMessage());
+                    }
+                    String why = failure;
+                    s.handler.post(() -> {
+                        importing = false;
+                        if (s.isDestroyed()) return;
+                        imported.putAll(outcomes);
+                        fill.run();
+                        add.setEnabled(true);
+                        if (why != null) { progress.setText(s.getString(R.string.meross_import_failed, why)); progress.setTextColor(BAD); }
+                        else progress.setVisibility(View.GONE);
+                    });
+                });
+            });
+        }
+
+        /** What became of a plug, in words. */
+        private String words(String outcome, boolean online) {
+            switch (outcome) {
+                case "added": return screen.getString(R.string.meross_added);
+                case "already": return screen.getString(R.string.meross_already);
+                case "missing": return screen.getString(online ? R.string.meross_missing_plug : R.string.meross_offline);
+                case "unreachable": return screen.getString(R.string.meross_moli_silent);
+                default: return screen.getString(R.string.meross_add_refused, outcome);
+            }
         }
 
         private void copy(String key) {

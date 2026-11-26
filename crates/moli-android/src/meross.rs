@@ -1,6 +1,7 @@
-//! The key of a Meross account, read once from the account (DECISIONS 7):
+//! The key of a Meross account, read once from the account (DECISIONS 7),
+//! with the list of its devices (their names in the Meross app):
 //! sign in as `meross_lan` does (`/v1/Auth/signIn`, the region's server,
-//! its redirection followed), keep the key, sign out at once
+//! its redirection followed), keep the key, read `/v1/Device/devList`, sign out at once
 //! (`/v1/Profile/Logout`). The password is neither kept nor written
 //! anywhere. Protocol knowledge from `meross_lan` (MIT): envelope, signature,
 //! statuses; no code copied.
@@ -26,6 +27,7 @@ const SERVER: &str = "https://iotx-eu.meross.com";
 const REGION: &str = "eu";
 const SIGN_IN: &str = "/v1/Auth/signIn";
 const SIGN_OUT: &str = "/v1/Profile/Logout";
+const DEVICES: &str = "/v1/Device/devList";
 const REDIRECTED: i64 = 1030;
 const LIMIT: Duration = Duration::from_secs(10);
 const MAX_BODY: usize = 64 * 1024;
@@ -47,7 +49,8 @@ impl std::fmt::Debug for Account {
     }
 }
 
-/// The key (`{"key": …}`), or Meross's refusal (`{"status": 1004, "info": …}`):
+/// The key and the account's devices (`{"key": …, "devices": [{uuid, name,
+/// model, online}]}`), or Meross's refusal (`{"status": 1004, "info": …}`):
 /// the screen says it in words. A network failure is an error.
 pub fn key(account: &Account) -> anyhow::Result<Json> {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -89,13 +92,39 @@ async fn key_from(server: &str, account: &Account) -> anyhow::Result<Json> {
     if key.len() > MAX_KEY || key.chars().any(char::is_control) {
         bail!("Meross gave a key of an unknown form");
     }
-    // The session is not needed any more: closed, as meross_lan does (a
-    // failure changes nothing for the key).
+    // The account's devices (their names in the Meross app), then the
+    // session closed, as meross_lan does: a failure of either changes
+    // nothing for the key.
+    let mut devices = Vec::new();
     if let Some(token) = text(&data["token"]) {
         let server = text(&data["domain"]).unwrap_or(&server);
+        if let Ok(list) = post(server, DEVICES, &json!({}), Some(token)).await {
+            devices = devices_of(&list);
+        }
         let _ = post(server, SIGN_OUT, &json!({}), Some(token)).await;
     }
-    Ok(json!({ "key": key }))
+    Ok(json!({ "key": key, "devices": devices }))
+}
+
+/// `/v1/Device/devList`: `[{uuid, name, model, online}]`, in the account's order.
+fn devices_of(answer: &Json) -> Vec<Json> {
+    if status(answer) != 0 {
+        return Vec::new();
+    }
+    answer["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|d| {
+            let uuid = text(&d["uuid"])?;
+            Some(json!({
+                "uuid": uuid,
+                "name": text(&d["devName"]).unwrap_or(uuid),
+                "model": text(&d["deviceType"]).unwrap_or(""),
+                "online": d["onlineStatus"].as_i64() == Some(1),
+            }))
+        })
+        .collect()
 }
 
 fn text(value: &Json) -> Option<&str> {
@@ -157,7 +186,7 @@ fn server_of(server: &str) -> anyhow::Result<(&str, u16, bool)> {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes.iter().fold(String::new(), |mut out, b| {
         let _ = write!(out, "{b:02x}");
@@ -236,6 +265,19 @@ mod tests {
                 }),
             )
             .route(
+                DEVICES,
+                route(
+                    |State(seen): State<Seen>, headers: HeaderMap, body: String| async move {
+                        record(&seen, DEVICES, &headers, &body);
+                        axum::Json(json!({ "apiStatus": 0, "data": [
+                            { "uuid": "00000000000000000000000000000001", "devName": "Lampe", "deviceType": "mss315", "onlineStatus": 1 },
+                            { "uuid": "00000000000000000000000000000002", "devName": "", "deviceType": "mss310", "onlineStatus": 2 },
+                            { "devName": "sans uuid" }
+                        ] }))
+                    },
+                ),
+            )
+            .route(
                 SIGN_OUT,
                 route(
                     |State(seen): State<Seen>, headers: HeaderMap, body: String| async move {
@@ -274,9 +316,15 @@ mod tests {
         }))
         .await;
         let out = key_from(&server, &account(None)).await.unwrap();
-        assert_eq!(out, json!({ "key": "fictional-account-key" }));
+        assert_eq!(
+            out,
+            json!({ "key": "fictional-account-key", "devices": [
+                { "uuid": "00000000000000000000000000000001", "name": "Lampe", "model": "mss315", "online": true },
+                { "uuid": "00000000000000000000000000000002", "name": "00000000000000000000000000000002", "model": "mss310", "online": false }
+            ] })
+        );
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(seen.len(), 3, "{seen:?}");
         let (path, params, auth) = &seen[0];
         assert_eq!(path, SIGN_IN);
         assert_eq!(params["email"], "user@example.com");
@@ -285,8 +333,10 @@ mod tests {
         assert_eq!(params["accountCountryCode"], "eu");
         assert!(params.get("mfaCode").is_none());
         assert!(auth.is_none());
-        assert_eq!(seen[1].0, SIGN_OUT);
+        assert_eq!(seen[1].0, DEVICES);
         assert_eq!(seen[1].2.as_deref(), Some("Basic fictional-token"));
+        assert_eq!(seen[2].0, SIGN_OUT);
+        assert_eq!(seen[2].2.as_deref(), Some("Basic fictional-token"));
     }
 
     #[tokio::test]
