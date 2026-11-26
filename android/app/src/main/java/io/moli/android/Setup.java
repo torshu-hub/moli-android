@@ -160,6 +160,28 @@ final class Setup {
         return refused;
     }
 
+    /**
+     * Takes a plug added from the dashboard out of the house: Moli stopped,
+     * its entry out of `devices-added.json`, Moli started again, its key
+     * forgotten. Null when done; else why (`not_added_here`: written in moli.toml).
+     */
+    static String removePlug(Context context, String instance) throws Exception {
+        String key = ProtectedKey.open(context)[0];
+        String path = config(context).getPath();
+        Backup.stop(context);
+        try {
+            call("plug_remove", path, "", instance);
+        } catch (Exception refused) {
+            startAndWait(context);
+            return String.valueOf(refused.getMessage());
+        }
+        String refused = startAndWait(context);
+        if (refused == null)
+            call("forget", path, key, new JSONObject().put("instance", instance)
+                    .put("names", new JSONArray().put("key")).toString());
+        return refused;
+    }
+
     private static String restart(Context context, String path) throws InterruptedException {
         String refused = startAndWait(context);
         if (refused == null) {

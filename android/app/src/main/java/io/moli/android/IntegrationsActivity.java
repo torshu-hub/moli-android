@@ -670,6 +670,8 @@ public final class IntegrationsActivity extends Activity {
         private static final Map<String, JSONObject> inHouse = new HashMap<>();
         private static boolean searched, houseRead, askCode;
         private boolean working;
+        /** Redraws the plugs table (set when it is built). */
+        private Runnable fillAgain;
         private String progressText;
         private boolean progressBad;
 
@@ -797,6 +799,7 @@ public final class IntegrationsActivity extends Activity {
                 search.setEnabled(!working);
                 apply.setEnabled(!working && houseRead);
             };
+            fillAgain = fill[0];
             fill[0].run();
             // The house may have changed since: read again at each opening.
             if (!working) readHouse(fill[0], false);
@@ -903,6 +906,30 @@ public final class IntegrationsActivity extends Activity {
             });
         }
 
+        /** « Retirer »: the plug leaves the house (Moli restarts), then the table is read again. */
+        private void removePlug(String uuid, String deviceId) {
+            IntegrationsActivity s = screen;
+            if (fillAgain == null) return;
+            working = true;
+            outcomes.remove(uuid);
+            say(s.getString(R.string.meross_removing), false);
+            fillAgain.run();
+            s.probe.execute(() -> {
+                String why;
+                try { why = Setup.removePlug(s, deviceId.split(":", 2)[0]); }
+                catch (Exception e) { why = String.valueOf(e.getMessage()); }
+                String refused = why;
+                s.handler.post(() -> {
+                    working = false;
+                    if (s.isDestroyed()) return;
+                    if (refused == null) { outcomes.put(uuid, "removed"); say(s.getString(R.string.meross_removed), false); }
+                    else if (refused.equals("not_added_here")) say(s.getString(R.string.meross_remove_elsewhere), true);
+                    else say(s.getString(R.string.meross_remove_failed, refused), true);
+                    readHouse(fillAgain, true);
+                });
+            });
+        }
+
         /** Reads the house's plugs, then refreshes; `keep`: the message shown stays. */
         private void readHouse(Runnable fill, boolean keep) {
             IntegrationsActivity s = screen;
@@ -986,7 +1013,7 @@ public final class IntegrationsActivity extends Activity {
             table.removeAllViews();
             TableRow head = new TableRow(s);
             int[] titles = { R.string.meross_col_plug, R.string.meross_col_details, R.string.meross_col_cloud,
-                    R.string.meross_col_address, R.string.meross_col_house, R.string.meross_col_name, R.string.meross_col_outcome };
+                    R.string.meross_col_address, R.string.meross_col_house, R.string.meross_col_name, R.string.meross_col_outcome, R.string.meross_col_remove };
             for (int t : titles) head.addView(cell(s.text(s.getString(t), 13, MUTED, true)));
             table.addView(head);
             for (int i = 0; i < accountDevices.length(); i++) table.addView(plugRow(i));
@@ -1045,7 +1072,18 @@ public final class IntegrationsActivity extends Activity {
 
             String outcome = outcomes.get(uuid);
             row.addView(cell(s.text(outcome == null ? "" : words(outcome, online.equals("online")), 13,
-                    outcome != null && (outcome.equals("added") || outcome.equals("already") || outcome.equals("renamed")) ? OK : WARN, true)));
+                    outcome != null && (outcome.equals("added") || outcome.equals("already") || outcome.equals("renamed") || outcome.equals("removed")) ? OK : WARN, true)));
+
+            if (device != null) {
+                Button out = s.flat(s.getString(R.string.setup_remove));
+                out.setTextColor(BAD);
+                out.setBackground(s.stroke(PAGE, BAD, 10));
+                out.setEnabled(!working);
+                out.setOnClickListener(v -> removePlug(uuid, device.optString("id")));
+                row.addView(cell(out));
+            } else {
+                row.addView(cell(s.text("", 13, MUTED, false)));
+            }
             return row;
         }
 
@@ -1101,6 +1139,7 @@ public final class IntegrationsActivity extends Activity {
                 case "added": return screen.getString(R.string.meross_added);
                 case "already": return screen.getString(R.string.meross_already);
                 case "renamed": return screen.getString(R.string.meross_renamed);
+                case "removed": return screen.getString(R.string.meross_removed_short);
                 case "no_name": return screen.getString(R.string.meross_no_name);
                 case "missing": return screen.getString(online ? R.string.meross_missing_plug : R.string.meross_offline);
                 case "unreachable": return screen.getString(R.string.meross_moli_silent);

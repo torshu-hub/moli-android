@@ -183,4 +183,15 @@
     <string name="network_role_tablet">Cette tablette</string>
     <string name="network_role_box">Box</string>
     <string name="network_copied">%1$s copiée.</string>
+    <string name="meross_col_remove">Retirer</string>
+    <string name="meross_removing">Retrait de la prise, Moli redémarre…</string>
+    <string name="meross_removed">Prise retirée de la maison. Son historique et son nom restent dans Moli.</string>
+    <string name="meross_removed_short">Retirée</string>
+    <string name="meross_remove_elsewhere">Cette prise n’a pas été ajoutée par « Ajouter un appareil » : elle est écrite dans moli.toml.</string>
+    <string name="meross_remove_failed">Retrait impossible : %1$s</string>
+    <string name="integrations_help">Ajouter, régler, retirer</string>
+    <string name="network_help">Les appareils du réseau</string>
+    <string name="house_title">La maison</string>
+    <string name="direct_launch">Ouvrir Moli au lancement</string>
+    <string name="direct_launch_help">L’appli s’ouvre directement sur Moli. Retour depuis sa première page ramène ici.</string>
 </resources>

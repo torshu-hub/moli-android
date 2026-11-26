@@ -292,6 +292,33 @@ async fn add_to(request: &Add) -> anyhow::Result<Json> {
     Ok(Json::Object(outcomes))
 }
 
+/// « Retirer »: takes `instance` out of the devices added from the
+/// dashboard (`data/devices-added.json`, Moli's own file, rewritten whole
+/// as Moli does). Moli must be stopped meanwhile, and started again after.
+/// Errors: `not_added_here` (the instance is not in that file: it is in
+/// `moli.toml`, or gone), `unreadable` (a file Moli did not write is left as it is).
+pub fn remove_added(config: &std::path::Path, instance: &str) -> anyhow::Result<()> {
+    let path = crate::setup::data_dir(config)?.join("devices-added.json");
+    let bytes = std::fs::read(&path).map_err(|_| anyhow::anyhow!("not_added_here"))?;
+    let mut file: Json =
+        serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("unreadable"))?;
+    let devices = file["devices"]
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("unreadable"))?;
+    let before = devices.len();
+    devices.retain(|d| d["instance"].as_str() != Some(instance));
+    anyhow::ensure!(devices.len() < before, "not_added_here");
+    let aside = path.with_extension("json.tmp");
+    {
+        use std::io::Write as _;
+        let mut out = std::fs::File::create(&aside)?;
+        out.write_all(&serde_json::to_vec_pretty(&file)?)?;
+        out.sync_all()?;
+    }
+    std::fs::rename(&aside, &path)?;
+    Ok(())
+}
+
 /// Moli refuses a request without a `Host` it knows (its guard against DNS
 /// rebinding): this very machine's.
 fn host(port: u16) -> String {
@@ -397,6 +424,31 @@ impl Moli {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn removing_a_plug_keeps_the_others_and_the_file_format() {
+        let dir = std::env::temp_dir().join(format!("moli-remove-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("moli.toml");
+        std::fs::write(&config, "").unwrap();
+        let file = dir.join("devices-added.json");
+        std::fs::write(
+            &file,
+            r#"{"version":1,"devices":[{"instance":"meross-1","profile":"meross-mss310","host":"192.168.1.10"},{"instance":"meross-2","profile":"meross-mss310","host":"192.168.1.11"}]}"#,
+        )
+        .unwrap();
+        remove_added(&config, "meross-1").unwrap();
+        let left: Json = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(left["version"], 1);
+        assert_eq!(left["devices"].as_array().unwrap().len(), 1);
+        assert_eq!(left["devices"][0]["instance"], "meross-2");
+        // Gone already, or never added here: said, nothing rewritten.
+        assert_eq!(
+            remove_added(&config, "meross-1").unwrap_err().to_string(),
+            "not_added_here"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
 
     use std::sync::{Arc, Mutex};
