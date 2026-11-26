@@ -48,6 +48,8 @@ const POLL_SENSORS: Duration = Duration::from_secs(10 * 60);
 /// The setpoints a room takes (Home Assistant's `DEFAULT_MIN_TEMP`, `DEFAULT_MAX_TEMP`).
 const MIN_TEMP: f64 = 7.0;
 const MAX_TEMP: f64 = 30.0;
+/// A homes reading that failed (no network at the start) is tried again after this.
+const RETRY_HOMES: Duration = Duration::from_secs(120);
 const BACKOFF: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -757,6 +759,8 @@ struct Registry {
     homes: HashMap<DeviceId, HomeRef>,
     modules: HashSet<DeviceId>,
     sensors: HashSet<DeviceId>,
+    /// The homes' layout was read once: until then each status tick tries it again.
+    homes_known: bool,
     /// The last status of each room (a `heat` order keeps its setpoint).
     last: HashMap<DeviceId, RoomStatus>,
 }
@@ -834,6 +838,7 @@ async fn sync_homes(
     }
     next.sensors = std::mem::take(&mut registry.sensors);
     next.last = std::mem::take(&mut registry.last);
+    next.homes_known = true;
     *registry = next;
     Ok(())
 }
@@ -1098,6 +1103,7 @@ async fn run(config: &Config, ctx: &mut DriverCtx) -> anyhow::Result<()> {
     };
     let mut registry = Registry::default();
     let mut blocked: Option<Instant> = None;
+    let mut homes_retry_at = Instant::now() + RETRY_HOMES;
 
     match token_of(&mut tokens, ctx).await {
         Ok(Some(token)) => {
@@ -1136,9 +1142,18 @@ async fn run(config: &Config, ctx: &mut DriverCtx) -> anyhow::Result<()> {
             _ = status_tick.tick() => {
                 if blocked.is_some_and(|until| Instant::now() < until) { continue; }
                 match token_of(&mut tokens, ctx).await {
-                    Ok(Some(token)) => if let Err(e) = poll_status(ctx, &token, &mut registry).await {
-                        note(ctx, "status", &e, &mut blocked);
-                    },
+                    Ok(Some(token)) => {
+                        if !registry.homes_known
+                            && Instant::now() >= homes_retry_at
+                            && let Err(e) = sync_homes(config, ctx, &token, &mut registry).await
+                        {
+                            homes_retry_at = Instant::now() + RETRY_HOMES;
+                            note(ctx, "home sync", &e, &mut blocked);
+                        }
+                        if let Err(e) = poll_status(ctx, &token, &mut registry).await {
+                            note(ctx, "status", &e, &mut blocked);
+                        }
+                    }
                     Ok(None) => { revoked(ctx); ctx.cancelled().await; return Ok(()); }
                     Err(e) => note(ctx, "token renewal", &e, &mut blocked),
                 }
