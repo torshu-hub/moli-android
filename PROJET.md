@@ -28,6 +28,7 @@ Une intégration propre, c'est une fonctionnalité complète et native de Moli O
 - Une conversation par mission : on repart d'ETAT.md, pas d'une conversation longue.
 - Ne jamais rester bloqué sur une question : je ne suis pas toujours là. Écrire la question dans le rapport, choisir la lecture la plus raisonnable, dire laquelle en tête du travail, et continuer. Seuls s'arrêtent les actes de la liste « À me demander » et les choix irréversibles : les préparer, les mettre de côté, et poursuivre les tâches indépendantes.
 - Anticiper mes validations. Dès les cinq lignes, lister d'un coup tout ce dont tu auras besoin de ma part pour aller au bout (accès, secrets, comptes de test, essais sur la tablette, accords de la liste « À me demander »), pour que je les donne en une fois. Ne redemander plus tard que ce qui n'était pas prévisible.
+- Économiser les tokens : rien que la CI refait (pas de contrôle local en double), ce que je peux vérifier sur la tablette m'est laissé et listé dans le rapport, pas de vérification de secours programmée, pas d'attente ni de lecture inutile.
 - Lots courts, sur une branche, avec une PR ; s'arrêter au premier résultat visible. Tu fusionnes toi-même, je n'ai rien à faire sur GitHub. Contrôles : scripts/check.sh et la CI.
 - Rapport court dans la PR : ajouté, retiré, écarts avec Moli officiel, « rien d'anticipé ».
 - État : un seul ETAT.md court (jalon, branche/PR, décisions actives, preuves, prochaine action).

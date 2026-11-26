@@ -49,8 +49,8 @@ impl std::fmt::Debug for Account {
     }
 }
 
-/// The key and the account's devices (`{"key": …, "devices": [{uuid, name,
-/// model, online}]}`), or Meross's refusal (`{"status": 1004, "info": …}`):
+/// The key and the account's devices (`{"key": …, "devices": […]}`, see
+/// [`devices_of`]), or Meross's refusal (`{"status": 1004, "info": …}`):
 /// the screen says it in words. A network failure is an error.
 pub fn key(account: &Account) -> anyhow::Result<Json> {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -106,7 +106,11 @@ async fn key_from(server: &str, account: &Account) -> anyhow::Result<Json> {
     Ok(json!({ "key": key, "devices": devices }))
 }
 
-/// `/v1/Device/devList`: `[{uuid, name, model, online}]`, in the account's order.
+/// `/v1/Device/devList`, in the account's order: `[{uuid, name, model,
+/// subtype, firmware, hardware, channels, online, bound}]`. `online` is
+/// Meross's own word (`onlineStatus`: 1 online, 2 offline, 3 updating, else
+/// unknown); `bound` the association date (Unix seconds), 0 if not given;
+/// `channels` the names of the outlets beyond the first (a power strip's).
 fn devices_of(answer: &Json) -> Vec<Json> {
     if status(answer) != 0 {
         return Vec::new();
@@ -117,11 +121,28 @@ fn devices_of(answer: &Json) -> Vec<Json> {
         .flatten()
         .filter_map(|d| {
             let uuid = text(&d["uuid"])?;
+            let online = match d["onlineStatus"].as_i64() {
+                Some(1) => "online",
+                Some(2) => "offline",
+                Some(3) => "updating",
+                _ => "unknown",
+            };
+            let channels: Vec<&str> = d["channels"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| text(&c["devName"]))
+                .collect();
             Some(json!({
                 "uuid": uuid,
                 "name": text(&d["devName"]).unwrap_or(uuid),
                 "model": text(&d["deviceType"]).unwrap_or(""),
-                "online": d["onlineStatus"].as_i64() == Some(1),
+                "subtype": text(&d["subType"]).unwrap_or(""),
+                "firmware": text(&d["fmwareVersion"]).unwrap_or(""),
+                "hardware": text(&d["hdwareVersion"]).unwrap_or(""),
+                "channels": channels,
+                "online": online,
+                "bound": d["bindTime"].as_i64().unwrap_or(0),
             }))
         })
         .collect()
@@ -270,7 +291,9 @@ mod tests {
                     |State(seen): State<Seen>, headers: HeaderMap, body: String| async move {
                         record(&seen, DEVICES, &headers, &body);
                         axum::Json(json!({ "apiStatus": 0, "data": [
-                            { "uuid": "00000000000000000000000000000001", "devName": "Lampe", "deviceType": "mss315", "onlineStatus": 1 },
+                            { "uuid": "00000000000000000000000000000001", "devName": "Lampe", "deviceType": "mss315", "subType": "un",
+                              "fmwareVersion": "6.3.22", "hdwareVersion": "6.0.0", "onlineStatus": 1, "bindTime": 1_700_000_000,
+                              "channels": [{}, { "devName": "Écran" }] },
                             { "uuid": "00000000000000000000000000000002", "devName": "", "deviceType": "mss310", "onlineStatus": 2 },
                             { "devName": "sans uuid" }
                         ] }))
@@ -319,8 +342,10 @@ mod tests {
         assert_eq!(
             out,
             json!({ "key": "fictional-account-key", "devices": [
-                { "uuid": "00000000000000000000000000000001", "name": "Lampe", "model": "mss315", "online": true },
-                { "uuid": "00000000000000000000000000000002", "name": "00000000000000000000000000000002", "model": "mss310", "online": false }
+                { "uuid": "00000000000000000000000000000001", "name": "Lampe", "model": "mss315", "subtype": "un",
+                  "firmware": "6.3.22", "hardware": "6.0.0", "channels": ["Écran"], "online": "online", "bound": 1_700_000_000 },
+                { "uuid": "00000000000000000000000000000002", "name": "00000000000000000000000000000002", "model": "mss310", "subtype": "",
+                  "firmware": "", "hardware": "", "channels": [], "online": "offline", "bound": 0 }
             ] })
         );
         let seen = seen.lock().unwrap();

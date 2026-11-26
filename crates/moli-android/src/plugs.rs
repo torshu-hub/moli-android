@@ -11,6 +11,11 @@
 //! dashboard does it (a session opened with the house's code, which the app
 //! holds): the plugs land where that page puts them (`devices-added.json`,
 //! the key in the vault), portable to another machine.
+//!
+//! The house: a plug Moli runs is the device `<instance>:<uuid>` of
+//! `/api/devices` (the profile's identity is the plug's uuid), wherever it
+//! was added from. Renaming goes through the dashboard's own call
+//! (`PUT /api/labels/{id}`).
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
@@ -121,6 +126,120 @@ async fn find_in(
     found
 }
 
+/// « Which of these plugs does the house run? »: where Moli listens, the
+/// house's code, the account's uuids.
+#[derive(Deserialize)]
+pub struct House {
+    pub port: u16,
+    pub pin: String,
+    pub uuids: Vec<String>,
+}
+
+impl std::fmt::Debug for House {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("House")
+            .field("uuids", &self.uuids)
+            .finish_non_exhaustive()
+    }
+}
+
+/// `{uuid: {"id": device, "name": its name in Moli}}`, only those the house runs.
+pub fn house(request: &House) -> anyhow::Result<Json> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let moli = Moli::open(request.port, &request.pin).await?;
+        let devices = moli.call(Method::GET, "/api/devices", &Json::Null).await;
+        moli.close().await;
+        let (status, snapshot) = devices?;
+        anyhow::ensure!(status == 200, "Moli: HTTP {status}");
+        Ok(in_house(&snapshot, &request.uuids))
+    })
+}
+
+/// The devices of `/api/devices` whose identity is one of `uuids`, with the
+/// name the dashboard shows (the family's label, else the device's own).
+fn in_house(snapshot: &Json, uuids: &[String]) -> Json {
+    let mut out = serde_json::Map::new();
+    for device in snapshot["devices"].as_array().into_iter().flatten() {
+        let Some(id) = device["id"].as_str() else {
+            continue;
+        };
+        let Some((_, native)) = id.split_once(':') else {
+            continue;
+        };
+        let Some(uuid) = uuids.iter().find(|u| u.eq_ignore_ascii_case(native)) else {
+            continue;
+        };
+        let name = device["label"]["name"]
+            .as_str()
+            .or_else(|| device["native_name"].as_str())
+            .unwrap_or(id);
+        out.insert(uuid.clone(), json!({ "id": id, "name": name }));
+    }
+    Json::Object(out)
+}
+
+/// « Rename these devices »: where Moli listens, the house's code, and
+/// each device's id and new name.
+#[derive(Deserialize)]
+pub struct Rename {
+    pub port: u16,
+    pub pin: String,
+    pub devices: Vec<Named>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Named {
+    pub id: String,
+    pub name: String,
+}
+
+impl std::fmt::Debug for Rename {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Rename")
+            .field("devices", &self.devices)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What became of each: `{id: "renamed" | <Moli's error>}`.
+pub fn rename(request: &Rename) -> anyhow::Result<Json> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(rename_in(request))
+}
+
+async fn rename_in(request: &Rename) -> anyhow::Result<Json> {
+    let moli = Moli::open(request.port, &request.pin).await?;
+    let mut outcomes = serde_json::Map::new();
+    for device in &request.devices {
+        // The id goes in the path: only what Moli's ids are made of.
+        let outcome = if device
+            .id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_' | '.'))
+        {
+            let path = format!("/api/labels/{}", device.id);
+            match moli
+                .call(Method::PUT, &path, &json!({ "name": device.name }))
+                .await
+            {
+                Ok((200, _)) => json!("renamed"),
+                Ok((_, answer)) => json!(answer["error"].as_str().unwrap_or("refused")),
+                Err(e) => json!(format!("{e:#}")),
+            }
+        } else {
+            json!("invalid")
+        };
+        outcomes.insert(device.id.clone(), outcome);
+    }
+    moli.close().await;
+    Ok(Json::Object(outcomes))
+}
+
 /// « Add these plugs »: where Moli listens, the house's code, the account's
 /// key, and each plug's address and name.
 #[derive(Deserialize)]
@@ -204,7 +323,11 @@ impl Moli {
             .uri(path)
             .header(http::header::COOKIE, &self.cookie)
             .header("x-moli-origin", "ui");
-        let request = moli_net::json_body(builder, body)?;
+        let request = if body.is_null() {
+            moli_net::empty(builder)?
+        } else {
+            moli_net::json_body(builder, body)?
+        };
         let (status, answer) =
             moli_net::plain_within("127.0.0.1", self.port, request, MOLI_WAIT).await?;
         Ok((
@@ -415,6 +538,30 @@ mod tests {
                     axum::Json(json!({ "instance": "meross-1", "device": "meross-1:1", "labelled": true }))
                 }),
             )
+            .route(
+                "/api/devices",
+                axum::routing::get(|State(seen): State<Seen>, headers: HeaderMap| async move {
+                    record(&seen, "devices", &headers, "");
+                    axum::Json(json!({ "devices": [
+                        { "id": format!("meross-1:{UUID}"), "native_name": "Smart Plug", "label": { "name": "Salon" } },
+                        { "id": "meross-2:00000000000000000000000000000002", "native_name": "Smart Plug", "label": {} },
+                        { "id": "hue:1", "native_name": "Lampe", "label": {} }
+                    ] }))
+                }),
+            )
+            .route(
+                "/api/labels/{id}",
+                axum::routing::put(
+                    |State(seen): State<Seen>, axum::extract::Path(id): axum::extract::Path<String>, headers: HeaderMap, body: String| async move {
+                        let body = record(&seen, &format!("label {id}"), &headers, &body);
+                        if id.starts_with("meross-") {
+                            axum::Json(json!({ "name": body["name"] })).into_response()
+                        } else {
+                            (StatusCode::NOT_FOUND, axum::Json(json!({ "error": "unknown device" }))).into_response()
+                        }
+                    },
+                ),
+            )
             .with_state(seen.clone());
         let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
@@ -483,5 +630,70 @@ mod tests {
         let (port, seen) = moli().await;
         assert!(add_to(&request(port, "000000")).await.is_err());
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_house_s_plugs_are_read_and_renamed_as_the_dashboard_does() {
+        let (port, seen) = moli().await;
+        let request = House {
+            port,
+            pin: "482913".into(),
+            uuids: vec![
+                UUID.to_uppercase(),
+                "00000000000000000000000000000002".into(),
+                "00000000000000000000000000000003".into(),
+            ],
+        };
+        let out = tokio::task::spawn_blocking(move || house(&request))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            out,
+            json!({
+                UUID.to_uppercase(): { "id": format!("meross-1:{UUID}"), "name": "Salon" },
+                "00000000000000000000000000000002": { "id": "meross-2:00000000000000000000000000000002", "name": "Smart Plug" },
+            })
+        );
+        let out = rename_in(&Rename {
+            port,
+            pin: "482913".into(),
+            devices: vec![
+                Named {
+                    id: format!("meross-1:{UUID}"),
+                    name: "Cuisine".into(),
+                },
+                Named {
+                    id: "hue:9".into(),
+                    name: "x".into(),
+                },
+                Named {
+                    id: "../session".into(),
+                    name: "x".into(),
+                },
+            ],
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            out,
+            json!({ format!("meross-1:{UUID}"): "renamed", "hue:9": "unknown device", "../session": "invalid" })
+        );
+        let seen = seen.lock().unwrap();
+        let paths: Vec<&str> = seen.iter().map(|(p, ..)| p.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "/api/session",
+                "devices",
+                "/api/session (delete)",
+                "/api/session",
+                &format!("label meross-1:{UUID}"),
+                "label hue:9",
+                "/api/session (delete)"
+            ]
+        );
+        assert_eq!(seen[4].1, json!({ "name": "Cuisine" }));
+        assert_eq!(seen[4].3.as_deref(), Some("ui"));
     }
 }
