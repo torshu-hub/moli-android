@@ -64,6 +64,8 @@ public final class IntegrationsActivity extends Activity {
     private final Map<String, JSONObject> live = new HashMap<>();
     private boolean wide, busy;
     private LinearLayout house, side;
+    /** The house's pane (and the gap beside it): hidden while a form is open. */
+    private View housePane, gap;
     private TextView banner;
     private String query = "";
     /** What the right pane shows: null (catalogue), else the open form. */
@@ -123,13 +125,16 @@ public final class IntegrationsActivity extends Activity {
         house = column();
         side = column();
         if (wide) {
-            panes.addView(scroll(house), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2));
-            View gap = new View(this);
+            housePane = scroll(house);
+            panes.addView(housePane, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2));
+            gap = new View(this);
             panes.addView(gap, new LinearLayout.LayoutParams(dp(20), 1));
             panes.addView(scroll(side), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 3));
             root.addView(panes, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         } else {
             LinearLayout both = column();
+            housePane = house;
+            gap = null;
             both.addView(house);
             both.addView(side, matchWrap(0, dp(16), 0, 0));
             root.addView(scroll(both), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
@@ -259,6 +264,10 @@ public final class IntegrationsActivity extends Activity {
 
     private void showSide() {
         if (side == null) return;
+        // An open form takes the whole screen; the house comes back with it closed.
+        int shown = form == null ? View.VISIBLE : View.GONE;
+        housePane.setVisibility(shown);
+        if (gap != null) gap.setVisibility(shown);
         side.removeAllViews();
         if (form != null) { form.show(side); return; }
         side.addView(heading(getString(R.string.setup_catalogue)));

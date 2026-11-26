@@ -78,10 +78,6 @@ public final class ManagementActivity extends Activity {
         button(root, R.string.restore, this::chooseRestore);
         button(root, R.string.key_title, this::showKey);
         setContentView(root);
-        // A house already set up opens straight on Moli; this screen stays
-        // one Back away.
-        if (saved == null && ProtectedKey.exists(this))
-            startActivity(new Intent(this, DashboardActivity.class));
     }
 
     private static final int SAVE = 1, RESTORE = 2;
