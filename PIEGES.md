@@ -17,7 +17,7 @@
 - La garde : `protected_devices` demande aussi le code au tableau de bord ouvert sans code (origine « foyer »). → Vérifier comment la tablette ouvre le tableau de bord avant de protéger un appareil.
 
 ## Git, GitHub, APK
-- Poussée forcée refusée à l'agent. → Après une PR fusionnée, repartir de `origin/main` puis fusionner l'ancienne branche distante en gardant sa version (`git fetch origin <branche> && git merge -s ours FETCH_HEAD`).
+- Les PR sont fusionnées en squash : la branche locale diverge toujours de `main` ensuite (`git pull --ff-only` échoue), et la poussée forcée est refusée à l'agent. → Repartir de `origin/main` (`git checkout -B <branche> origin/main`), puis fusionner l'ancienne branche distante en gardant la version de `main` (`git fetch origin <branche> && git merge -s ours FETCH_HEAD`).
 - ETAT.md modifié en parallèle par une autre conversation : conflit. → Récupérer `main` juste avant d'éditer ETAT.md, et avant de fusionner.
 - Numéro d'APK : c'est le `run_number` du workflow `android` lancé par le push sur `main`, pas celui de la PR (les PR consomment aussi des numéros).
 - Pas de vérification de secours programmée (PROJET) : les événements de la PR suffisent.

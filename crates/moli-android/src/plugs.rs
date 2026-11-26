@@ -319,6 +319,81 @@ pub fn remove_added(config: &std::path::Path, instance: &str) -> anyhow::Result<
     Ok(())
 }
 
+/// « Ce qui est déjà en place »: where Moli listens and the house's code.
+#[derive(Deserialize)]
+pub struct Installed {
+    pub port: u16,
+    pub pin: String,
+}
+
+impl std::fmt::Debug for Installed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Installed").finish_non_exhaustive()
+    }
+}
+
+/// The Meross plugs of the house added by their address (`devices-added.json`),
+/// without the account: `{"plugs": [{instance, profile, host, name}], "moli": bool}`,
+/// the name as the dashboard shows it (`""` when Moli does not answer:
+/// `moli` is then false, the list still comes from the file).
+pub fn installed(config: &std::path::Path, request: &Installed) -> anyhow::Result<Json> {
+    let path = crate::setup::data_dir(config)?.join("devices-added.json");
+    let file: Json = match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("unreadable"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({ "devices": [] }),
+        Err(e) => return Err(e.into()),
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let snapshot = runtime.block_on(async {
+        let moli = Moli::open(request.port, &request.pin).await.ok()?;
+        let devices = moli.call(Method::GET, "/api/devices", &Json::Null).await;
+        moli.close().await;
+        match devices {
+            Ok((200, snapshot)) => Some(snapshot),
+            _ => None,
+        }
+    });
+    Ok(installed_from(&file, snapshot.as_ref()))
+}
+
+fn installed_from(file: &Json, snapshot: Option<&Json>) -> Json {
+    let mut plugs = Vec::new();
+    for added in file["devices"].as_array().into_iter().flatten() {
+        let profile = added["profile"].as_str().unwrap_or_default();
+        let Some(instance) = added["instance"].as_str() else {
+            continue;
+        };
+        if !profile.starts_with("meross-") {
+            continue;
+        }
+        let names: Vec<&str> = snapshot
+            .and_then(|s| s["devices"].as_array())
+            .into_iter()
+            .flatten()
+            .filter(|d| {
+                d["id"]
+                    .as_str()
+                    .and_then(|id| id.split_once(':'))
+                    .is_some_and(|(i, _)| i == instance)
+            })
+            .filter_map(|d| {
+                d["label"]["name"]
+                    .as_str()
+                    .or_else(|| d["native_name"].as_str())
+            })
+            .collect();
+        plugs.push(json!({
+            "instance": instance,
+            "profile": profile,
+            "host": added["host"],
+            "name": names.join(", "),
+        }));
+    }
+    json!({ "plugs": plugs, "moli": snapshot.is_some() })
+}
+
 /// Moli refuses a request without a `Host` it knows (its guard against DNS
 /// rebinding): this very machine's.
 fn host(port: u16) -> String {
@@ -424,6 +499,28 @@ impl Moli {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_house_plugs_are_listed_without_the_account() {
+        let file = json!({ "version": 1, "devices": [
+            { "instance": "meross-1", "profile": "meross-mss310", "host": "192.168.1.10" },
+            { "instance": "daikin-1", "profile": "daikin-brp069", "host": "192.168.1.12" },
+            { "instance": "meross-2", "profile": "meross-mss310", "host": "192.168.1.11" },
+        ]});
+        let snapshot = json!({ "devices": [
+            { "id": "meross-1:aaaa", "label": { "name": "Salon" }, "native_name": "Smart Plug" },
+            { "id": "meross-10:bbbb", "native_name": "Autre" },
+        ]});
+        let listed = installed_from(&file, Some(&snapshot));
+        assert_eq!(listed["moli"], true);
+        let plugs = listed["plugs"].as_array().unwrap();
+        assert_eq!(plugs.len(), 2);
+        assert_eq!(plugs[0]["name"], "Salon");
+        assert_eq!(plugs[0]["host"], "192.168.1.10");
+        // Not running (or Moli silent): listed all the same, without a name.
+        assert_eq!(plugs[1]["name"], "");
+        assert_eq!(installed_from(&file, None)["moli"], false);
+    }
 
     #[test]
     fn removing_a_plug_keeps_the_others_and_the_file_format() {

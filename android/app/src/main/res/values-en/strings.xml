@@ -13,7 +13,7 @@
     <string name="setup_house">In the house</string>
     <string name="setup_house_empty">No integration yet. Pick one from the catalogue.</string>
     <string name="setup_see_dashboard">See in the dashboard (System)</string>
-    <string name="setup_added_elsewhere">Devices added by their address (dashboard, “Add a device”) are managed there.</string>
+    <string name="setup_added_elsewhere">Devices added by their address (dashboard, “Add a device”) are managed there; Meross plugs also in their form (list, Remove).</string>
     <string name="setup_catalogue">Catalogue</string>
     <string name="setup_search">Search (name, brand, model)</string>
     <string name="setup_nothing_found">Nothing in the official catalogue for this search.</string>
@@ -182,10 +182,8 @@
     <string name="network_role_tablet">This tablet</string>
     <string name="network_role_box">Router</string>
     <string name="network_copied">%1$s copied.</string>
-    <string name="meross_col_remove">Remove</string>
     <string name="meross_removing">Removing the plug, Moli restarts…</string>
     <string name="meross_removed">Plug removed from the house. Its history and name stay in Moli.</string>
-    <string name="meross_removed_short">Removed</string>
     <string name="meross_remove_elsewhere">This plug was not added through « Add a device »: it is written in moli.toml.</string>
     <string name="meross_remove_failed">Could not remove it: %1$s</string>
     <string name="integrations_help">Add, set up, remove</string>
@@ -193,4 +191,8 @@
     <string name="house_title">The house</string>
     <string name="direct_launch">Open Moli at launch</string>
     <string name="direct_launch_help">The app opens straight on Moli. Back from its first page returns here.</string>
+    <string name="meross_in_house">Meross plugs in the house</string>
+    <string name="meross_in_house_help">Added by their address. Remove: Moli restarts, the plug leaves the house; its history stays.</string>
+    <string name="meross_in_house_none">No Meross plug added by its address.</string>
+    <string name="meross_in_house_no_moli">Moli does not answer: no names, removing works all the same.</string>
 </resources>

@@ -118,6 +118,13 @@ final class Setup {
         return new JSONObject(call("meross_house", config(context).getPath(), "", body));
     }
 
+    /** The Meross plugs of the house, without the account (plugs.rs `installed`). */
+    static JSONObject merossInstalled(Context context) throws Exception {
+        String pin = ProtectedKey.open(context)[1];
+        String body = new JSONObject().put("port", MoliService.port).put("pin", pin).toString();
+        return new JSONObject(call("meross_installed", config(context).getPath(), "", body));
+    }
+
     /** Renames devices ([{id, name}]) as the dashboard does: `{id: "renamed" | Moli's error}`. */
     static JSONObject merossRename(Context context, JSONArray devices) throws Exception {
         String pin = ProtectedKey.open(context)[1];
