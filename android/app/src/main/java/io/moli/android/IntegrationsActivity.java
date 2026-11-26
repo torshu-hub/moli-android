@@ -658,8 +658,8 @@ public final class IntegrationsActivity extends Activity {
 
         /**
          * The Meross plugs the house runs, read from Moli without the
-         * account: name in Moli, model, address, and « Retirer » (Moli
-         * restarts, the plug leaves `devices-added.json`, its key the vault).
+         * account: name in Moli, model, address, and « Retirer » (Moli's own
+         * route: the plug stops, leaves `devices-added.json`, its key the vault).
          */
         private View merossInHouse() {
             IntegrationsActivity s = screen;
@@ -691,6 +691,7 @@ public final class IntegrationsActivity extends Activity {
 
         private View installedRow(JSONObject plug, TextView state) {
             IntegrationsActivity s = screen;
+            LinearLayout cell = s.column();
             LinearLayout line = s.row();
             line.setGravity(Gravity.CENTER_VERTICAL);
             line.setPadding(0, s.dp(10), 0, 0);
@@ -703,34 +704,57 @@ public final class IntegrationsActivity extends Activity {
             Button out = s.flat(s.getString(R.string.setup_remove));
             out.setTextColor(BAD);
             out.setBackground(s.stroke(PAGE, BAD, 10));
-            out.setOnClickListener(v -> {
-                if (s.busy) return;
-                s.busy = true;
-                out.setEnabled(false);
-                state.setText(R.string.meross_removing);
-                state.setTextColor(INFO);
-                s.probe.execute(() -> {
-                    String why;
-                    try { why = Setup.removePlug(s, plug.optString("instance")); }
-                    catch (Exception e) { why = String.valueOf(e.getMessage()); }
-                    String refused = why;
-                    s.handler.post(() -> {
-                        s.busy = false;
-                        if (s.isDestroyed()) return;
-                        if (refused == null) {
-                            android.widget.Toast.makeText(s, R.string.meross_removed, android.widget.Toast.LENGTH_LONG).show();
-                            s.showSide();
-                        } else {
-                            out.setEnabled(true);
-                            state.setText(refused.equals("not_added_here") ? s.getString(R.string.meross_remove_elsewhere)
-                                    : s.getString(R.string.meross_remove_failed, refused));
-                            state.setTextColor(BAD);
-                        }
-                    });
+            out.setOnClickListener(v -> take(plug.optString("instance"), null, out, state, R.string.meross_removing, R.string.meross_removed));
+            line.addView(out, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, s.dp(44)));
+            cell.addView(line);
+            // A house from before the clean removal: another plug's old device,
+            // silent, under this plug's number. Moli forgets it on request.
+            JSONArray devices = plug.optJSONArray("devices");
+            if (devices != null && devices.length() > 1) {
+                for (int i = 0; i < devices.length(); i++) {
+                    JSONObject device = devices.optJSONObject(i);
+                    if (device == null || device.optBoolean("online", true)) continue;
+                    LinearLayout ghost = s.row();
+                    ghost.setGravity(Gravity.CENTER_VERTICAL);
+                    ghost.addView(s.text(s.getString(R.string.meross_ghost, device.optString("name")), 13, MUTED, false),
+                            new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+                    Button forget = s.flat(s.getString(R.string.meross_forget));
+                    forget.setOnClickListener(v -> take(plug.optString("instance"), device.optString("device"), forget, state,
+                            R.string.meross_forgetting, R.string.meross_forgotten));
+                    ghost.addView(forget, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, s.dp(40)));
+                    cell.addView(ghost);
+                }
+            }
+            return cell;
+        }
+
+        /** « Retirer » or « Oublier »: Moli's own route, then the card is read again. */
+        private void take(String instance, String device, Button button, TextView state, int doing, int done) {
+            IntegrationsActivity s = screen;
+            if (s.busy) return;
+            s.busy = true;
+            button.setEnabled(false);
+            state.setText(doing);
+            state.setTextColor(INFO);
+            s.probe.execute(() -> {
+                String why;
+                try { why = Setup.removePlug(s, instance, device); }
+                catch (Exception e) { why = String.valueOf(e.getMessage()); }
+                String refused = why;
+                s.handler.post(() -> {
+                    s.busy = false;
+                    if (s.isDestroyed()) return;
+                    if (refused == null) {
+                        android.widget.Toast.makeText(s, done, android.widget.Toast.LENGTH_LONG).show();
+                        s.showSide();
+                    } else {
+                        button.setEnabled(true);
+                        state.setText(refused.equals("not_found") ? s.getString(R.string.meross_remove_elsewhere)
+                                : s.getString(R.string.meross_remove_failed, refused));
+                        state.setTextColor(BAD);
+                    }
                 });
             });
-            line.addView(out, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, s.dp(44)));
-            return line;
         }
 
         /*

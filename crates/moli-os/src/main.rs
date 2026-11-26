@@ -1458,6 +1458,7 @@ const KINDS: &[&str] = &[
     "alarm",
     "presence",
     "telegram",
+    "pushover",
     "phones",
     "moonraker",
     "ipp",
@@ -1544,6 +1545,7 @@ fn spawn_house_drivers(
             Arc::new(moli_heating::Heating::new(
                 hub.clone(),
                 config.heating.clone(),
+                config.heating_house.clone(),
                 zone,
             )),
             cancel.clone(),
@@ -1782,6 +1784,7 @@ fn build_driver(
             .1,
         ),
         "telegram" => configured_driver(config, moli_telegram::Telegram::new)?,
+        "pushover" => configured_driver(config, moli_pushover::Pushover::new)?,
         "kasa" => configured_driver(config, moli_kasa::Kasa::new)?,
         "recycleapp" => configured_driver(config, moli_recycleapp::RecycleApp::new)?,
         "engie" => configured_driver(config, moli_engie::Engie::new)?,

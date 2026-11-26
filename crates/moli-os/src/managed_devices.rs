@@ -15,7 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use moli_api::device_setup::{
-    DeviceInstall, DeviceInstalled, DevicePreview, DeviceProbe, DeviceSetup, SetupError,
+    DeviceInstall, DeviceInstalled, DevicePreview, DeviceProbe, DeviceRemoved, DeviceSetup,
+    SetupError,
 };
 use moli_core::{DeviceId, InstanceId, Origin, Outcome};
 use moli_profile::{KeyUse, Recognition, Recognized};
@@ -161,7 +162,15 @@ struct Configured {
 struct State {
     devices: Vec<Added>,
     editable: bool,
-    tasks: Vec<JoinHandle<()>>,
+    tasks: Vec<Running>,
+}
+
+/// A device's driver, stoppable on its own (a removal) or with Moli.
+#[derive(Debug)]
+struct Running {
+    instance: String,
+    cancel: CancellationToken,
+    task: JoinHandle<()>,
 }
 
 #[derive(Debug)]
@@ -248,15 +257,21 @@ impl Manager {
         }))
     }
 
-    fn spawn(&self, added: &Added) -> anyhow::Result<JoinHandle<()>> {
+    fn spawn(&self, added: &Added) -> anyhow::Result<Running> {
         let options = added.driver(self.0.port).options.try_into()?;
         let driver = moli_profile::ProfileDriver::new(options, self.0.trust_file.clone())?;
-        Ok(spawn_driver(
+        let cancel = self.0.cancel.child_token();
+        let task = spawn_driver(
             &self.0.hub,
             InstanceId::from(added.instance.as_str()),
             Arc::new(driver),
-            self.0.cancel.clone(),
-        ))
+            cancel.clone(),
+        );
+        Ok(Running {
+            instance: added.instance.clone(),
+            cancel,
+            task,
+        })
     }
 
     /// Starts what the file lists (at boot: nobody holds the state yet).
@@ -267,7 +282,7 @@ impl Manager {
         let devices = state.devices.clone();
         for added in &devices {
             match self.spawn(added) {
-                Ok(task) => state.tasks.push(task),
+                Ok(running) => state.tasks.push(running),
                 Err(e) => {
                     tracing::warn!(instance = %added.instance, error = %e, "cannot start a device added from the dashboard");
                 }
@@ -278,8 +293,8 @@ impl Manager {
     /// Waits for the drivers it started (after the cancellation).
     pub async fn shutdown(&self) {
         let tasks = std::mem::take(&mut self.0.state.lock().await.tasks);
-        for task in tasks {
-            let _ = task.await;
+        for running in tasks {
+            let _ = running.task.await;
         }
     }
 
@@ -352,12 +367,18 @@ impl Manager {
         devices: &[Added],
     ) -> Option<(String, Option<String>)> {
         let snapshot = self.0.hub.snapshot();
+        // A device whose driver is gone (removed, or the house remembers it
+        // from before) is not in the house: it can be added again.
         if let Some(device) = snapshot.devices.iter().find(|d| {
-            d.device
-                .id
-                .as_str()
-                .split_once(':')
-                .is_some_and(|(_, native)| native == identity)
+            snapshot
+                .drivers
+                .iter()
+                .any(|driver| driver.instance == d.device.instance)
+                && d.device
+                    .id
+                    .as_str()
+                    .split_once(':')
+                    .is_some_and(|(_, native)| native == identity)
         }) {
             return Some((
                 device.device.instance.as_str().to_owned(),
@@ -391,7 +412,10 @@ impl Manager {
             .map(|instance| (instance, None))
     }
 
-    fn next_instance(&self, profile: &str, devices: &[Added]) -> String {
+    /// The instance a device is added under: the one it had before if the
+    /// house remembers it (its name, room and history go on), else the
+    /// smallest number that holds no memory of another device.
+    fn instance_for(&self, profile: &str, identity: &str, devices: &[Added]) -> String {
         let running: BTreeSet<String> = self
             .0
             .hub
@@ -400,12 +424,30 @@ impl Manager {
             .iter()
             .map(|d| d.instance.as_str().to_owned())
             .collect();
+        let remembered = self.0.hub.remembered_devices();
+        let free = |candidate: &str| {
+            !self.0.taken.contains(candidate)
+                && !running.contains(candidate)
+                && !devices.iter().any(|d| d.instance == candidate)
+        };
+        let prefix = format!("{profile}-");
+        if let Some(back) = remembered.iter().find_map(|id| {
+            let (instance, native) = id.as_str().split_once(':')?;
+            (native == identity
+                && instance.starts_with(&prefix)
+                && valid_instance(instance)
+                && free(instance))
+            .then(|| instance.to_owned())
+        }) {
+            return back;
+        }
         (1..=MAX_DEVICES * 4)
-            .map(|n| format!("{profile}-{n}"))
+            .map(|n| format!("{prefix}{n}"))
             .find(|candidate| {
-                !self.0.taken.contains(candidate)
-                    && !running.contains(candidate)
-                    && !devices.iter().any(|d| d.instance == *candidate)
+                free(candidate)
+                    && !remembered
+                        .iter()
+                        .any(|id| id.instance().as_str() == candidate)
             })
             .unwrap_or_else(|| profile.to_owned())
     }
@@ -449,6 +491,91 @@ impl Manager {
         })
     }
 
+    /// Takes an added device out of the house: its entry and key go, its
+    /// driver stops, its definition and last values are dropped. Its name,
+    /// room and history stay, for the day it is added again.
+    async fn remove_now(
+        &self,
+        instance: String,
+        actor: String,
+    ) -> Result<DeviceRemoved, SetupError> {
+        if self.0.cancel.is_cancelled() {
+            return Err(SetupError::new("shutting_down"));
+        }
+        let mut state = self.0.state.lock().await;
+        let Some(added) = state
+            .devices
+            .iter()
+            .find(|d| d.instance == instance)
+            .cloned()
+        else {
+            return Err(SetupError::new("not_found"));
+        };
+        if !state.editable {
+            return Err(SetupError::new("persistence_failed"));
+        }
+        let rest: Vec<Added> = state
+            .devices
+            .iter()
+            .filter(|d| d.instance != instance)
+            .cloned()
+            .collect();
+        let id = InstanceId::from(instance.as_str());
+        // Written first: a failure leaves the device running, as it was.
+        if let Err(e) = write_store(&self.0.path, &rest) {
+            tracing::warn!(error = %e, "cannot write the devices added from the dashboard");
+            self.0.hub.record_driver_configured(
+                id,
+                "profile",
+                false,
+                false,
+                Some(actor),
+                Outcome::Err("not stored".into()),
+            );
+            return Err(SetupError::new("persistence_failed"));
+        }
+        state.devices = rest;
+        if let Some(at) = state.tasks.iter().position(|r| r.instance == instance) {
+            let running = state.tasks.swap_remove(at);
+            running.cancel.cancel();
+            let _ = running.task.await;
+        }
+        self.0.hub.retire_instance(&id);
+        if let (false, Some(secret)) = (added.empty_secret, secret_of(&added.profile)) {
+            let _ = self.0.hub.take_secret(&id, &secret).await;
+        }
+        drop(state);
+        self.0
+            .hub
+            .record_driver_configured(id, "profile", false, false, Some(actor), Outcome::Ok);
+        tracing::info!(%instance, "device removed from the house");
+        Ok(DeviceRemoved { instance })
+    }
+
+    /// Forgets a device that does not answer and what the house kept of it
+    /// (a ghost: the old tenant of a number a new device now has).
+    async fn forget_now(&self, instance: String, device: String) -> Result<(), SetupError> {
+        if self.0.cancel.is_cancelled() {
+            return Err(SetupError::new("shutting_down"));
+        }
+        if self.0.taken.contains(&instance) || !valid_instance(&instance) {
+            return Err(SetupError::new("not_found"));
+        }
+        let _state = self.0.state.lock().await;
+        let id = DeviceId::new(&InstanceId::from(instance.as_str()), &device);
+        match self.0.hub.forget_device(&id).await {
+            Ok(true) => {
+                tracing::info!(%instance, "device forgotten");
+                Ok(())
+            }
+            Ok(false) => Err(SetupError::new("not_found")),
+            Err(moli_runtime::ForgetError::Online) => Err(SetupError::new("device_online")),
+            Err(moli_runtime::ForgetError::Persist(_)) => {
+                Err(SetupError::new("persistence_failed"))
+            }
+        }
+    }
+
     #[allow(clippy::too_many_lines)] // one addition, in the order it must happen
     async fn install_now(
         &self,
@@ -482,7 +609,7 @@ impl Manager {
         if let Some((instance, _)) = self.existing(&request.host, &found.identity, &state.devices) {
             return Err(SetupError::conflict("duplicate_device", &instance));
         }
-        let instance = self.next_instance(found.profile, &state.devices);
+        let instance = self.instance_for(found.profile, &found.identity, &state.devices);
         let id = InstanceId::from(instance.as_str());
         let added = Added {
             instance: instance.clone(),
@@ -514,8 +641,8 @@ impl Manager {
             );
             return Err(SetupError::new("persistence_failed"));
         }
-        let task = match self.spawn(&added) {
-            Ok(task) => task,
+        let running = match self.spawn(&added) {
+            Ok(running) => running,
             Err(e) => {
                 // Not started: nothing stays of it, and the journal says so.
                 tracing::warn!(instance = %instance, error = %e, "cannot start the device just added");
@@ -542,7 +669,7 @@ impl Manager {
             }
         };
         state.devices = devices;
-        state.tasks.push(task);
+        state.tasks.push(running);
         drop(state);
         self.0.hub.record_driver_added(
             id.clone(),
@@ -630,6 +757,25 @@ impl DeviceSetup for Manager {
                 .await
                 .unwrap_or_else(|_| Err(SetupError::new("persistence_failed")))
         })
+    }
+
+    fn remove(
+        &self,
+        instance: String,
+        actor: String,
+    ) -> BoxFuture<'_, Result<DeviceRemoved, SetupError>> {
+        // Its own task, like an addition: a closed page does not leave a
+        // device half removed.
+        let this = self.clone();
+        Box::pin(async move {
+            tokio::spawn(async move { this.remove_now(instance, actor).await })
+                .await
+                .unwrap_or_else(|_| Err(SetupError::new("persistence_failed")))
+        })
+    }
+
+    fn forget(&self, instance: String, device: String) -> BoxFuture<'_, Result<(), SetupError>> {
+        Box::pin(self.forget_now(instance, device))
     }
 }
 

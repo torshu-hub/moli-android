@@ -168,9 +168,11 @@ telles que les appareils les nomment).
   `warn`), l'occupation du disque (`free` : % libre), la grappe (`degraded` : `true` si dégradée), le
   Wi-Fi ; les débits `down` et `up` en Mbit/s dans l'en-tête, convertis depuis l'unité que **le point
   déclare** (`rate_unit` seulement pour un point qui n'en déclare pas ; une unité qui n'est pas un
-  débit n'est pas convertie : « — »), et leur courbe des dernières 24 h. Entrent dans le bandeau
-  « à voir » : une température au-delà de `alert`, un ventilateur au-delà de `warn`, la grappe
-  dégradée, un disque plein à 90 % ou plus.
+  débit n'est pas convertie : « — »), et leur courbe des dernières 24 h, dans la même unité. Entrent
+  dans le bandeau « à voir » : une température au-delà de `alert`, un ventilateur au-delà de `warn`,
+  la grappe dégradée, un disque plein à 90 % ou plus. L'état de la ligne (l'appareil qui donne
+  `external_ip` : connectée, depuis quand, débits de la ligne, adresse publique) entre dans cette
+  carte, qui remplace alors la carte « box » d'avant : une seule carte par box.
 - `themes` et `theme` : les thèmes de la maison et celui qu'un nouvel écran prend (voir
   « Les thèmes » ci-dessous).
 - `menu` (facultatif) : le menu qu'un écran prend tant qu'il n'a rien choisi,
@@ -357,7 +359,11 @@ session ; `chrome --screenshot` ne rend jamais la main à cause du flux SSE.
   des groupes de programmes (TRV-ZBT), d'après les convertisseurs de Zigbee2MQTT. Une TRVZB ne
   renvoie pas sa table (écriture seule) : l'éditeur le dit, enregistrer la remplace. Une TRV-ZBT
   garde trois groupes ; les textes sont ceux du groupe en cours d'édition, ce que l'éditeur signale
-  quand ce n'est pas le groupe suivi par la vanne.
+  quand ce n'est pas le groupe suivi par la vanne. Pour une pièce du chauffage de Moli, quand la
+  maison a des programmes (`[heating_house]`), un sélecteur au-dessus des jours choisit le
+  programme édité (par défaut celui que choisit `chauffage:maison`) : l'éditeur écrit alors
+  `weekly_schedule_<clé>_<jour>`, dit quand un jour reprend celui du premier programme, et propose
+  d'y revenir.
   Partout où il paraît (Pièces, Chauffage, Accueil, Moli), un thermostat qui ne fait que chauffer
   est **dessiné en radiateur** : vanne Zigbee, thermostat de pièce de Moli, et vanne d'un autre
   protocole (Matter : `target_temperature` et un mode `off`/`heat`, sans rien d'un climatiseur,

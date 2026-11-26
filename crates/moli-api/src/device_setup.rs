@@ -6,7 +6,7 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
@@ -103,6 +103,13 @@ pub struct DeviceInstalled {
     pub labelled: bool,
 }
 
+/// An added device taken out of the house: its driver is stopped, its entry
+/// and key are gone; its name, room and history wait for it to come back.
+#[derive(Clone, Debug, Serialize)]
+pub struct DeviceRemoved {
+    pub instance: String,
+}
+
 pub trait DeviceSetup: Send + Sync + Debug {
     fn probe(&self, request: DeviceProbe) -> BoxFuture<'_, Result<DevicePreview, SetupError>>;
     fn install(
@@ -110,6 +117,17 @@ pub trait DeviceSetup: Send + Sync + Debug {
         request: DeviceInstall,
         actor: String,
     ) -> BoxFuture<'_, Result<DeviceInstalled, SetupError>>;
+    /// Takes an added device out of the house (`not_found` if the instance
+    /// was not added from the dashboard).
+    fn remove(
+        &self,
+        instance: String,
+        actor: String,
+    ) -> BoxFuture<'_, Result<DeviceRemoved, SetupError>>;
+    /// Forgets a device that does not answer, with its name and room
+    /// (`device` is its identity, `instance:` left out). `not_found`: the
+    /// house knows nothing of it; `device_online`: it answers.
+    fn forget(&self, instance: String, device: String) -> BoxFuture<'_, Result<(), SetupError>>;
 }
 
 #[derive(Clone)]
@@ -174,6 +192,46 @@ pub(crate) async fn install(
     };
     match setup.install(request, caller.describe()).await {
         Ok(installed) => Json(installed).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+pub(crate) async fn remove(
+    State(hub): State<Hub>,
+    Extension(humans): Extension<Arc<Sessions>>,
+    Extension(Setup(setup)): Extension<Setup>,
+    Path(instance): Path<String>,
+    caller: Caller,
+    headers: HeaderMap,
+) -> Response {
+    if origin(&hub, &headers, &humans, &caller) != Origin::Ui {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(setup) = setup else {
+        return SetupError::new("unavailable").into_response();
+    };
+    match setup.remove(instance, caller.describe()).await {
+        Ok(removed) => Json(removed).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+pub(crate) async fn forget(
+    State(hub): State<Hub>,
+    Extension(humans): Extension<Arc<Sessions>>,
+    Extension(Setup(setup)): Extension<Setup>,
+    Path((instance, device)): Path<(String, String)>,
+    caller: Caller,
+    headers: HeaderMap,
+) -> Response {
+    if origin(&hub, &headers, &humans, &caller) != Origin::Ui {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(setup) = setup else {
+        return SetupError::new("unavailable").into_response();
+    };
+    match setup.forget(instance, device).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => error.into_response(),
     }
 }

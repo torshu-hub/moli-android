@@ -168,25 +168,17 @@ final class Setup {
     }
 
     /**
-     * Takes a plug added from the dashboard out of the house: Moli stopped,
-     * its entry out of `devices-added.json`, Moli started again, its key
-     * forgotten. Null when done; else why (`not_added_here`: written in moli.toml).
+     * Takes a plug added from the dashboard out of the house, or (with
+     * `device`) forgets a device of the house that does not answer: Moli's own
+     * routes (plugs.rs `take`), Moli running, no restart. Null when done; else
+     * Moli's reason (`not_found`: written in moli.toml, or gone).
      */
-    static String removePlug(Context context, String instance) throws Exception {
-        String key = ProtectedKey.open(context)[0];
-        String path = config(context).getPath();
-        Backup.stop(context);
-        try {
-            call("plug_remove", path, "", instance);
-        } catch (Exception refused) {
-            startAndWait(context);
-            return String.valueOf(refused.getMessage());
-        }
-        String refused = startAndWait(context);
-        if (refused == null)
-            call("forget", path, key, new JSONObject().put("instance", instance)
-                    .put("names", new JSONArray().put("key")).toString());
-        return refused;
+    static String removePlug(Context context, String instance, String device) throws Exception {
+        String pin = ProtectedKey.open(context)[1];
+        JSONObject body = new JSONObject().put("port", MoliService.port).put("pin", pin).put("instance", instance);
+        if (device != null) body.put("device", device);
+        String refused = call("plug_remove", config(context).getPath(), "", body.toString());
+        return refused.isEmpty() ? null : refused;
     }
 
     private static String restart(Context context, String path) throws InterruptedException {

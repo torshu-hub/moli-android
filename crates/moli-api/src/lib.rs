@@ -49,7 +49,7 @@ mod weather;
 use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{MethodRouter, get, post, put};
+use axum::routing::{MethodRouter, delete, get, post, put};
 use axum::{Extension, Router, middleware};
 use moli_history::History;
 use moli_runtime::Hub;
@@ -387,6 +387,14 @@ fn integration_routes(humans: &Arc<session::Sessions>, options: &Options) -> Rou
         .route(
             "/api/integrations/devices",
             upload(post(device_setup::install), 2048, humans),
+        )
+        .route(
+            "/api/integrations/devices/{instance}",
+            upload(delete(device_setup::remove), 1024, humans),
+        )
+        .route(
+            "/api/integrations/devices/{instance}/{device}",
+            upload(delete(device_setup::forget), 1024, humans),
         )
         .merge(overkiz::routes())
         .layer(Extension(device_setup::Setup(options.device_setup.clone())))
