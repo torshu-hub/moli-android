@@ -1953,9 +1953,11 @@ Au démarrage, `[sun]` est vérifié : au moins une façade, des `id` simples et
   pilote range le nouveau dans le coffre **avant** de s'en servir (et réessaie si le coffre le refuse).
   Seul un vrai `invalid_grant` l'efface, le pilote attend alors une reconnexion (`wait_for`) ; un
   secret abîmé, un quota ou une panne réseau n'effacent rien.
-- **Commandes** : consigne (mode manuel, au demi-degré), `system_mode` (`auto` suit le programme,
-  `heat` tient la consigne connue, `off`), `boost` (mode `max`), mode de la maison (`schedule`,
-  `away`, `hg`), programme choisi. Aucune confirmation ajoutée.
+- **Commandes** : consigne (7 à 30 °C, mode manuel, durée par défaut de Netatmo), `system_mode`
+  (`auto` suit le programme, `heat` tient la consigne connue, `off` sauf pour une pièce de vannes
+  seules), `boost` (mode `max` ; une pièce de vannes seules prend 30 °C en manuel, comme Home
+  Assistant), mode de la maison (`schedule`, `away`, `hg`), programme choisi (clé `schedules` de
+  `homesdata`). Aucune confirmation ajoutée.
 - **Tests** : `src/model.rs` et `src/tests.rs` (fixtures anonymisées de
   `integrations/netatmo/fixtures/`), `src/auth.rs` (jeton). Les noms de champs viennent de pyatmo et
   de l'intégration Home Assistant ; non vérifiés sur un vrai compte.

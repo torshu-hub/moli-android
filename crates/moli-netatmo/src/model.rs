@@ -8,6 +8,15 @@ fn text(v: &Json, key: &str) -> Option<String> {
     v.get(key)?.as_str().map(str::to_owned)
 }
 
+/// An id as text: Netatmo's are texts, a number is taken too (a room's `101`).
+fn ident(v: &Json, key: &str) -> Option<String> {
+    let value = v.get(key)?;
+    value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| value.as_i64().map(|n| n.to_string()))
+}
+
 fn number(v: &Json, key: &str) -> Option<f64> {
     v.get(key)?.as_f64()
 }
@@ -72,7 +81,7 @@ impl Home {
 pub(crate) fn parse_homesdata(answer: &Json, only: Option<&str>) -> Vec<Home> {
     list(&answer["body"], "homes")
         .filter_map(|home| {
-            let id = text(home, "id")?;
+            let id = ident(home, "id")?;
             if only.is_some_and(|wanted| wanted != id) {
                 return None;
             }
@@ -81,7 +90,7 @@ pub(crate) fn parse_homesdata(answer: &Json, only: Option<&str>) -> Vec<Home> {
                 therm_mode: text(home, "therm_mode"),
                 rooms: list(home, "rooms")
                     .filter_map(|r| {
-                        let id = text(r, "id")?;
+                        let id = ident(r, "id")?;
                         Some(Room {
                             name: text(r, "name").unwrap_or_else(|| id.clone()),
                             module_ids: list(r, "module_ids")
@@ -93,7 +102,7 @@ pub(crate) fn parse_homesdata(answer: &Json, only: Option<&str>) -> Vec<Home> {
                     .collect(),
                 modules: list(home, "modules")
                     .filter_map(|m| {
-                        let id = text(m, "id")?;
+                        let id = ident(m, "id")?;
                         Some(Module {
                             kind: text(m, "type").unwrap_or_default(),
                             name: text(m, "name").unwrap_or_else(|| id.clone()),
@@ -102,9 +111,9 @@ pub(crate) fn parse_homesdata(answer: &Json, only: Option<&str>) -> Vec<Home> {
                         })
                     })
                     .collect(),
-                schedules: list(home, "therm_schedules")
+                schedules: list(home, "schedules")
                     .filter_map(|s| {
-                        let id = text(s, "id")?;
+                        let id = ident(s, "id")?;
                         // A cooling or event schedule is not a heating one.
                         if text(s, "type").is_some_and(|t| t != "therm") {
                             return None;
@@ -176,7 +185,7 @@ pub(crate) fn parse_homestatus(answer: &Json) -> HomeStatus {
         rooms: list(home, "rooms")
             .filter_map(|r| {
                 Some(RoomStatus {
-                    id: text(r, "id")?,
+                    id: ident(r, "id")?,
                     reachable: flag(r, "reachable"),
                     measured: number(r, "therm_measured_temperature"),
                     setpoint: number(r, "therm_setpoint_temperature"),
@@ -189,7 +198,7 @@ pub(crate) fn parse_homestatus(answer: &Json) -> HomeStatus {
         modules: list(home, "modules")
             .filter_map(|m| {
                 Some(ModuleStatus {
-                    id: text(m, "id")?,
+                    id: ident(m, "id")?,
                     reachable: flag(m, "reachable"),
                     battery_percent: battery_percent(m),
                     rf_strength: int(m, "rf_strength"),
@@ -219,7 +228,7 @@ pub(crate) struct Sensor {
 }
 
 fn sensor(v: &Json, station: &str) -> Option<Sensor> {
-    let id = text(v, "_id")?;
+    let id = ident(v, "_id")?;
     let wifi = v.get("wifi_status").is_some();
     Some(Sensor {
         kind: text(v, "type").unwrap_or_default(),

@@ -184,7 +184,13 @@ fn netatmo_modes_become_valve_modes() {
 
 #[test]
 fn a_setpoint_is_a_manual_mode_at_the_half_degree() {
-    let a = plan_room("occupied_heating_setpoint", &Value::Float(20.74), None).unwrap();
+    let a = plan_room(
+        "occupied_heating_setpoint",
+        &Value::Float(20.74),
+        None,
+        false,
+    )
+    .unwrap();
     assert_eq!(
         a,
         Action::Room {
@@ -204,35 +210,41 @@ fn modes_of_a_room() {
         ..RoomStatus::default()
     };
     assert_eq!(
-        plan_room("system_mode", &Value::Text("auto".into()), None).unwrap(),
+        plan_room("system_mode", &Value::Text("auto".into()), None, false).unwrap(),
         Action::Room {
             mode: "home",
             temperature: None
         }
     );
     assert_eq!(
-        plan_room("system_mode", &Value::Text("off".into()), None).unwrap(),
+        plan_room("system_mode", &Value::Text("off".into()), None, false).unwrap(),
         Action::Room {
             mode: "off",
             temperature: None
         }
     );
     assert_eq!(
-        plan_room("system_mode", &Value::Text("heat".into()), Some(&held)).unwrap(),
+        plan_room(
+            "system_mode",
+            &Value::Text("heat".into()),
+            Some(&held),
+            false
+        )
+        .unwrap(),
         Action::Room {
             mode: "manual",
             temperature: Some(19.0)
         }
     );
     assert_eq!(
-        plan_room("boost", &Value::Bool(true), None).unwrap(),
+        plan_room("boost", &Value::Bool(true), None, false).unwrap(),
         Action::Room {
             mode: "max",
             temperature: None
         }
     );
     assert_eq!(
-        plan_room("boost", &Value::Bool(false), None).unwrap(),
+        plan_room("boost", &Value::Bool(false), None, false).unwrap(),
         Action::Room {
             mode: "home",
             temperature: None
@@ -242,9 +254,9 @@ fn modes_of_a_room() {
 
 #[test]
 fn heat_without_a_known_setpoint_is_refused_not_guessed() {
-    assert!(plan_room("system_mode", &Value::Text("heat".into()), None).is_err());
-    assert!(plan_room("system_mode", &Value::Text("cool".into()), None).is_err());
-    assert!(plan_room("local_temperature", &Value::Float(1.0), None).is_err());
+    assert!(plan_room("system_mode", &Value::Text("heat".into()), None, false).is_err());
+    assert!(plan_room("system_mode", &Value::Text("cool".into()), None, false).is_err());
+    assert!(plan_room("local_temperature", &Value::Float(1.0), None, false).is_err());
 }
 
 #[test]
@@ -277,4 +289,73 @@ fn the_config_refuses_unknown_options() {
     assert!(serde_json::from_value::<Config>(serde_json::json!({"home_id": "h"})).is_ok());
     assert!(serde_json::from_value::<Config>(serde_json::json!({})).is_ok());
     assert!(serde_json::from_value::<Config>(serde_json::json!({"nope": 1})).is_err());
+}
+
+#[test]
+fn a_valve_has_no_off_and_boosts_to_the_highest_setpoint() {
+    let off = Value::Text("off".into());
+    assert!(plan_room("system_mode", &off, None, true).is_err());
+    assert!(plan_room("system_mode", &off, None, false).is_ok());
+    assert_eq!(
+        plan_room("boost", &Value::Bool(true), None, true).unwrap(),
+        Action::Room {
+            mode: "manual",
+            temperature: Some(30.0)
+        }
+    );
+    assert_eq!(
+        plan_room("boost", &Value::Bool(true), None, false).unwrap(),
+        Action::Room {
+            mode: "max",
+            temperature: None
+        }
+    );
+    assert!(boosted("manual", Some(30.0), true));
+    assert!(!boosted("manual", Some(30.0), false));
+    assert!(boosted("max", None, false));
+    assert!(!boosted("manual", Some(21.0), true));
+}
+
+#[test]
+fn a_setpoint_stays_in_the_range_netatmo_takes() {
+    let high = plan_room(
+        "occupied_heating_setpoint",
+        &Value::Float(45.0),
+        None,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        high,
+        Action::Room {
+            mode: "manual",
+            temperature: Some(30.0)
+        }
+    );
+    let low = plan_room("occupied_heating_setpoint", &Value::Float(2.0), None, false).unwrap();
+    assert_eq!(
+        low,
+        Action::Room {
+            mode: "manual",
+            temperature: Some(7.0)
+        }
+    );
+}
+
+#[test]
+fn only_valves_alone_are_valve_rooms() {
+    let homes = model::parse_homesdata(&fixture("energy-homesdata.json"), None);
+    let home = &homes[0];
+    assert!(is_valve(home, &home.rooms[0]));
+    assert!(!is_valve(home, &home.rooms[1]));
+    let salon = room_device(&instance(), home, &home.rooms[0]);
+    let Kind::Enum { values } = &salon.points[2].kind else {
+        panic!("a choice")
+    };
+    assert_eq!(values.len(), 2);
+    let chambre = room_device(&instance(), home, &home.rooms[1]);
+    let Kind::Enum { values } = &chambre.points[2].kind else {
+        panic!("a choice")
+    };
+    assert_eq!(values.len(), 3);
 }

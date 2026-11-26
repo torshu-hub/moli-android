@@ -16,7 +16,7 @@
           {"id": "aa:bb:cc:dd:ee:02", "type": "NRV", "name": "Vanne salon", "room_id": "1", "bridge": "aa:bb:cc:dd:ee:01"},
           {"id": "aa:bb:cc:dd:ee:03", "type": "NATherm1", "name": "Thermostat chambre", "room_id": "2", "bridge": "aa:bb:cc:dd:ee:01"}
         ],
-        "therm_schedules": [
+        "schedules": [
           {"id": "sched-week", "name": "Semaine", "selected": true, "type": "therm"},
           {"id": "sched-holiday", "name": "Vacances", "type": "therm"},
           {"id": "sched-cool", "name": "Climatisation", "type": "cooling"}

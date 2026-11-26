@@ -45,6 +45,9 @@ const POLL_HOMES: Duration = Duration::from_secs(30 * 60);
 /// The stations measure every ten minutes.
 const POLL_SENSORS: Duration = Duration::from_secs(10 * 60);
 /// After a refusal for too many calls, how long the driver stays quiet.
+/// The setpoints a room takes (Home Assistant's `DEFAULT_MIN_TEMP`, `DEFAULT_MAX_TEMP`).
+const MIN_TEMP: f64 = 7.0;
+const MAX_TEMP: f64 = 30.0;
 const BACKOFF: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -236,6 +239,18 @@ fn device(instance: &InstanceId, native: &str, name: &str, kind: Option<&str>) -
     }
 }
 
+/// A room served by radiator valves only: they take no `off` and no `max`
+/// mode (Home Assistant sets them manual at 7 and at 30 °C instead).
+fn is_valve(home: &Home, room: &Room) -> bool {
+    let kinds: Vec<&str> = room
+        .module_ids
+        .iter()
+        .filter_map(|id| home.modules.iter().find(|m| &m.id == id))
+        .map(|m| m.kind.as_str())
+        .collect();
+    kinds.contains(&"NRV") && !kinds.contains(&"NATherm1") && !kinds.contains(&"OTM")
+}
+
 fn room_device(instance: &InstanceId, home: &Home, room: &Room) -> Device {
     let kinds: Vec<&str> = room
         .module_ids
@@ -266,7 +281,7 @@ fn room_device(instance: &InstanceId, home: &Home, room: &Room) -> Device {
         point(
             "occupied_heating_setpoint",
             &moli_i18n::tr!("pilotes.netatmo.consigne"),
-            degrees(5.0, 30.0),
+            degrees(MIN_TEMP, MAX_TEMP),
             true,
             Some(Unit::Celsius),
             Semantic::Temperature,
@@ -274,7 +289,11 @@ fn room_device(instance: &InstanceId, home: &Home, room: &Room) -> Device {
         point(
             "system_mode",
             &moli_i18n::tr!("pilotes.netatmo.mode"),
-            choice(&["auto", "heat", "off"]),
+            if is_valve(home, room) {
+                choice(&["auto", "heat"])
+            } else {
+                choice(&["auto", "heat", "off"])
+            },
             true,
             None,
             Semantic::Config,
@@ -615,7 +634,12 @@ fn system_mode(netatmo: &str) -> &'static str {
     }
 }
 
-fn publish_room(ctx: &DriverCtx, id: &DeviceId, status: &RoomStatus) {
+/// A boost: the `max` mode, or for a valve (which has none) the highest setpoint.
+fn boosted(mode: &str, setpoint: Option<f64>, valve: bool) -> bool {
+    mode == "max" || (valve && mode == "manual" && setpoint.is_some_and(|t| t >= MAX_TEMP))
+}
+
+fn publish_room(ctx: &DriverCtx, id: &DeviceId, status: &RoomStatus, valve: bool) {
     ctx.set_availability(id, status.reachable.unwrap_or(true));
     if let Some(t) = status.measured {
         ctx.set_state(id, "local_temperature", Value::Float(t));
@@ -625,7 +649,11 @@ fn publish_room(ctx: &DriverCtx, id: &DeviceId, status: &RoomStatus) {
     }
     if let Some(mode) = &status.mode {
         ctx.set_state(id, "system_mode", Value::Text(system_mode(mode).into()));
-        ctx.set_state(id, "boost", Value::Bool(mode == "max"));
+        ctx.set_state(
+            id,
+            "boost",
+            Value::Bool(boosted(mode, status.setpoint, valve)),
+        );
     }
     if let Some(power) = status.heating_power {
         ctx.set_state(id, "heat_demand", Value::Bool(power > 0.0));
@@ -638,8 +666,8 @@ fn publish_room(ctx: &DriverCtx, id: &DeviceId, status: &RoomStatus) {
 fn publish_status(ctx: &DriverCtx, registry: &Registry, home_id: &str, status: &HomeStatus) {
     for room in &status.rooms {
         let id = ctx.device_id(&room_native(home_id, &room.id));
-        if registry.rooms.contains_key(&id) {
-            publish_room(ctx, &id, room);
+        if let Some(known) = registry.rooms.get(&id) {
+            publish_room(ctx, &id, room, known.valve);
         }
     }
     for module in &status.modules {
@@ -711,6 +739,8 @@ fn publish_sensor(ctx: &DriverCtx, sensor: &Sensor) {
 struct RoomRef {
     home_id: String,
     room_id: String,
+    /// Served by valves only (see [`is_valve`]).
+    valve: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -752,6 +782,7 @@ async fn sync_homes(
                 RoomRef {
                     home_id: home.id.clone(),
                     room_id: room.id.clone(),
+                    valve: is_valve(home, room),
                 },
             );
             ctx.upsert_device(d);
@@ -875,18 +906,27 @@ fn half_degree(t: f64) -> f64 {
     (t * 2.0).round() / 2.0
 }
 
-fn plan_room(key: &str, value: &Value, last: Option<&RoomStatus>) -> anyhow::Result<Action> {
+fn plan_room(
+    key: &str,
+    value: &Value,
+    last: Option<&RoomStatus>,
+    valve_room: bool,
+) -> anyhow::Result<Action> {
     match (key, value) {
         ("occupied_heating_setpoint", v) => Ok(Action::Room {
             mode: "manual",
-            temperature: Some(half_degree(v.as_f64().context("not a temperature")?)),
+            temperature: Some(half_degree(
+                v.as_f64()
+                    .context("not a temperature")?
+                    .clamp(MIN_TEMP, MAX_TEMP),
+            )),
         }),
         ("system_mode", Value::Text(t)) => match &**t {
             "auto" => Ok(Action::Room {
                 mode: "home",
                 temperature: None,
             }),
-            "off" => Ok(Action::Room {
+            "off" if !valve_room => Ok(Action::Room {
                 mode: "off",
                 temperature: None,
             }),
@@ -905,6 +945,11 @@ fn plan_room(key: &str, value: &Value, last: Option<&RoomStatus>) -> anyhow::Res
                 value = other
             )),
         },
+        // A valve has no `max` mode: the highest setpoint is its boost.
+        ("boost", Value::Bool(true)) if valve_room => Ok(Action::Room {
+            mode: "manual",
+            temperature: Some(MAX_TEMP),
+        }),
         ("boost", Value::Bool(on)) => Ok(Action::Room {
             mode: if *on { "max" } else { "home" },
             temperature: None,
@@ -968,10 +1013,12 @@ async fn handle_command(
     let id = cmd.device.id.clone();
     let key = cmd.key.clone();
     let value = cmd.value.clone();
+    let mut on_valve = false;
     let outcome: anyhow::Result<()> = async {
         let (action, home_id, room_id) = if let Some(room) = registry.rooms.get(&id) {
+            on_valve = room.valve;
             (
-                plan_room(&key, &value, registry.last.get(&id))?,
+                plan_room(&key, &value, registry.last.get(&id), room.valve)?,
                 room.home_id.clone(),
                 Some(room.room_id.clone()),
             )
@@ -993,7 +1040,11 @@ async fn handle_command(
                     ctx.set_state(&id, "occupied_heating_setpoint", Value::Float(*t));
                 }
                 ctx.set_state(&id, "system_mode", Value::Text(system_mode(mode).into()));
-                ctx.set_state(&id, "boost", Value::Bool(*mode == "max"));
+                ctx.set_state(
+                    &id,
+                    "boost",
+                    Value::Bool(boosted(mode, *temperature, on_valve)),
+                );
             }
             Action::Home(mode) => ctx.set_state(&id, "therm_mode", Value::Text((*mode).into())),
             Action::Schedule(_) => ctx.set_state(&id, "schedule", value.clone()),
