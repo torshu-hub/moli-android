@@ -239,6 +239,8 @@ fn call(action: &str, config: &Path, key: String, body: &str) -> anyhow::Result<
         "meross_key" => meross::key(&serde_json::from_str(body)?)?.to_string(),
         "meross_find" => plugs::find(&serde_json::from_str(body)?)?.to_string(),
         "meross_add" => plugs::add(&serde_json::from_str(body)?)?.to_string(),
+        "meross_house" => plugs::house(&serde_json::from_str(body)?)?.to_string(),
+        "meross_rename" => plugs::rename(&serde_json::from_str(body)?)?.to_string(),
         other => anyhow::bail!("unknown action {other:?}"),
     })
 }

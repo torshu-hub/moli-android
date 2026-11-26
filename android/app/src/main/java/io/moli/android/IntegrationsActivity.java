@@ -27,8 +27,12 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.widget.Switch;
+import android.widget.TableLayout;
+import android.widget.TableRow;
 import android.widget.TextView;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -651,10 +655,15 @@ public final class IntegrationsActivity extends Activity {
 
         /** The Meross account's key, read once (DECISIONS 7); kept while the form is open. */
         private String accountKey;
-        /** The account's devices (uuid, name, model, online), then what became of each. */
+        /** The account's devices (meross.rs `devices_of`), in the account's order. */
         private JSONArray accountDevices = new JSONArray();
-        private final Map<String, String> imported = new HashMap<>();
-        private boolean importing;
+        /** By uuid in lower case: address found, device in the house, name chosen, outcome. */
+        private final Map<String, String> addresses = new HashMap<>(), choices = new HashMap<>(),
+                typed = new HashMap<>(), outcomes = new HashMap<>();
+        private final Map<String, JSONObject> inHouse = new HashMap<>();
+        private boolean working, searched, houseRead;
+        private String progressText;
+        private boolean progressBad;
         private boolean askCode;
 
         /**
@@ -747,69 +756,126 @@ public final class IntegrationsActivity extends Activity {
         }
 
         /**
-         * The account's plugs, added in one go: found on the network by
-         * their uuid, added by « Ajouter un appareil » with their Meross name.
+         * The account's plugs in a table: what the account says of each,
+         * its address on the network (« Rechercher sur le réseau »), the
+         * device the house runs for it, and the name to give it in Moli.
+         * « Appliquer » adds the missing ones and renames the others through
+         * the dashboard's own API.
          */
         private void plugs(LinearLayout box) {
             IntegrationsActivity s = screen;
             box.addView(s.text(s.getString(R.string.meross_plugs, accountDevices.length()), 16, INK, true), s.matchWrap(0, s.dp(18), 0, 0));
             box.addView(s.text(s.getString(R.string.meross_plugs_help), 14, MUTED, false), s.matchWrap(0, s.dp(4), 0, 0));
-            LinearLayout list = s.column();
-            box.addView(list, s.matchWrap(0, s.dp(6), 0, 0));
-            Runnable fill = () -> {
-                list.removeAllViews();
-                for (int i = 0; i < accountDevices.length(); i++) {
-                    JSONObject d = accountDevices.optJSONObject(i);
-                    LinearLayout line = s.row();
-                    line.setPadding(0, s.dp(6), 0, s.dp(6));
-                    String model = d.optString("model");
-                    TextView name = s.text(d.optString("name") + (model.isEmpty() ? "" : "  ·  " + model), 15, INK, false);
-                    line.addView(name, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-                    String outcome = imported.get(d.optString("uuid"));
-                    if (outcome != null) {
-                        boolean good = outcome.equals("added") || outcome.equals("already");
-                        line.addView(s.text(words(outcome, d.optBoolean("online", true)), 13, good ? OK : WARN, true));
-                    }
-                    list.addView(line);
-                }
-            };
-            fill.run();
+            TableLayout table = new TableLayout(s);
+            HorizontalScrollView across = new HorizontalScrollView(s);
+            across.addView(table);
+            box.addView(across, s.matchWrap(0, s.dp(10), 0, 0));
             TextView progress = s.text("", 14, INFO, false);
-            progress.setVisibility(importing ? View.VISIBLE : View.GONE);
             box.addView(progress, s.matchWrap(0, s.dp(8), 0, 0));
-            Button add = s.primary(s.getString(R.string.meross_add_all));
-            add.setEnabled(!importing);
-            box.addView(add, s.matchWrap(0, s.dp(10), 0, 0));
-            add.setOnClickListener(v -> {
-                importing = true;
-                add.setEnabled(false);
-                progress.setText(R.string.meross_finding);
-                progress.setVisibility(View.VISIBLE);
-                String key = accountKey;
-                JSONArray devices = accountDevices;
+            LinearLayout actions = s.row();
+            Button search = s.flat(s.getString(R.string.meross_search));
+            actions.addView(search, new LinearLayout.LayoutParams(0, s.dp(48), 1));
+            Button apply = s.primary(s.getString(R.string.meross_apply));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, s.dp(48), 1);
+            lp.setMargins(s.dp(12), 0, 0, 0);
+            actions.addView(apply, lp);
+            box.addView(actions, s.matchWrap(0, s.dp(10), 0, 0));
+
+            Runnable[] fill = new Runnable[1];
+            fill[0] = () -> {
+                fillTable(table);
+                progress.setText(progressText == null ? "" : progressText);
+                progress.setTextColor(progressBad ? BAD : INFO);
+                progress.setVisibility(progressText == null ? View.GONE : View.VISIBLE);
+                search.setEnabled(!working);
+                apply.setEnabled(!working && houseRead);
+            };
+            fill[0].run();
+            if (!houseRead && !working) readHouse(fill[0], false);
+
+            search.setOnClickListener(v -> {
+                working = true;
+                say(s.getString(R.string.meross_finding), false);
+                fill[0].run();
+                List<String> all = new ArrayList<>();
+                for (int i = 0; i < accountDevices.length(); i++) all.add(uuidAt(i));
                 s.probe.execute(() -> {
-                    Map<String, String> outcomes = new HashMap<>();
+                    Map<String, String> found = null;
+                    String failure = null;
+                    try { found = findAddresses(all); }
+                    catch (Exception e) { failure = String.valueOf(e.getMessage()); }
+                    Map<String, String> got = found;
+                    String why = failure;
+                    s.handler.post(() -> {
+                        working = false;
+                        if (s.isDestroyed()) return;
+                        if (got != null) { addresses.clear(); addresses.putAll(got); searched = true; }
+                        if (why != null) say(s.getString(R.string.meross_search_failed, why), true);
+                        else say(s.getString(R.string.meross_found, addresses.size(), accountDevices.length()), false);
+                        fill[0].run();
+                    });
+                });
+            });
+
+            apply.setOnClickListener(v -> {
+                working = true;
+                outcomes.clear();
+                say(s.getString(R.string.meross_applying), false);
+                fill[0].run();
+                // What to do, read on the UI thread: renames, then additions.
+                JSONArray renames = new JSONArray();
+                Map<String, String> renamed = new HashMap<>();
+                List<String> toAdd = new ArrayList<>();
+                Map<String, String> addNames = new HashMap<>();
+                for (int i = 0; i < accountDevices.length(); i++) {
+                    String uuid = uuidAt(i);
+                    String name = chosenName(i);
+                    JSONObject device = inHouse.get(uuid);
+                    if (name == null) { if (!"keep".equals(choiceOf(i))) outcomes.put(uuid, "no_name"); continue; }
+                    if (device != null) {
+                        if (name.equals(device.optString("name"))) continue;
+                        try { renames.put(new JSONObject().put("id", device.optString("id")).put("name", name)); }
+                        catch (Exception ignored) { continue; }
+                        renamed.put(device.optString("id"), uuid);
+                    } else {
+                        toAdd.add(uuid);
+                        addNames.put(uuid, name);
+                    }
+                }
+                String key = accountKey;
+                Map<String, String> known = new HashMap<>(addresses);
+                s.probe.execute(() -> {
+                    Map<String, String> done = new HashMap<>();
                     String failure = null;
                     try {
-                        JSONArray uuids = new JSONArray();
-                        for (int i = 0; i < devices.length(); i++) uuids.put(devices.optJSONObject(i).optString("uuid"));
-                        JSONObject where = Setup.merossFind(s, key, uuids);
+                        if (renames.length() > 0) {
+                            JSONObject answer = Setup.merossRename(s, renames);
+                            for (Map.Entry<String, String> e : renamed.entrySet())
+                                done.put(e.getValue(), answer.optString(e.getKey(), "refused"));
+                        }
+                        // The plugs to add need their address: found first if not yet.
+                        List<String> unknown = new ArrayList<>();
+                        for (String uuid : toAdd) if (!known.containsKey(uuid)) unknown.add(uuid);
+                        if (!unknown.isEmpty()) {
+                            s.handler.post(() -> { say(s.getString(R.string.meross_finding), false); fill[0].run(); });
+                            Map<String, String> found = findAddresses(unknown);
+                            known.putAll(found);
+                            s.handler.post(() -> { addresses.putAll(found); searched = true; });
+                        }
                         JSONArray plugs = new JSONArray();
-                        Map<String, String> uuidAt = new HashMap<>();
-                        for (int i = 0; i < devices.length(); i++) {
-                            JSONObject d = devices.optJSONObject(i);
-                            String uuid = d.optString("uuid").toLowerCase(Locale.ROOT);
-                            String host = where.optString(uuid, null);
-                            if (host == null) { outcomes.put(d.optString("uuid"), "missing"); continue; }
-                            uuidAt.put(host, d.optString("uuid"));
-                            plugs.put(new JSONObject().put("host", host).put("name", d.optString("name")));
+                        Map<String, String> uuidOf = new HashMap<>();
+                        for (String uuid : toAdd) {
+                            String host = known.get(uuid);
+                            if (host == null) { done.put(uuid, "missing"); continue; }
+                            uuidOf.put(host, uuid);
+                            plugs.put(new JSONObject().put("host", host).put("name", addNames.get(uuid)));
                         }
                         if (plugs.length() > 0) {
-                            s.handler.post(() -> progress.setText(R.string.meross_adding));
+                            s.handler.post(() -> { say(s.getString(R.string.meross_adding), false); fill[0].run(); });
                             JSONObject added = Setup.merossAdd(s, key, plugs);
-                            for (Map.Entry<String, String> e : uuidAt.entrySet()) {
+                            for (Map.Entry<String, String> e : uuidOf.entrySet()) {
                                 JSONObject o = added.optJSONObject(e.getKey());
-                                outcomes.put(e.getValue(), o == null ? "refused" : o.optString("outcome", "refused"));
+                                done.put(e.getValue(), o == null ? "refused" : o.optString("outcome", "refused"));
                             }
                         }
                     } catch (Exception e) {
@@ -817,16 +883,208 @@ public final class IntegrationsActivity extends Activity {
                     }
                     String why = failure;
                     s.handler.post(() -> {
-                        importing = false;
                         if (s.isDestroyed()) return;
-                        imported.putAll(outcomes);
-                        fill.run();
-                        add.setEnabled(true);
-                        if (why != null) { progress.setText(s.getString(R.string.meross_import_failed, why)); progress.setTextColor(BAD); }
-                        else progress.setVisibility(View.GONE);
+                        outcomes.putAll(done);
+                        // What the house now runs, with its names.
+                        if (why != null) say(s.getString(R.string.meross_import_failed, why), true);
+                        else if (done.isEmpty() && outcomes.isEmpty()) say(s.getString(R.string.meross_nothing_to_do), false);
+                        else say(s.getString(outcomesGood() ? R.string.meross_applied : R.string.meross_applied_partly), !outcomesGood());
+                        readHouse(fill[0], true);
                     });
                 });
             });
+        }
+
+        /** Reads the house's plugs, then refreshes; `keep`: the message shown stays. */
+        private void readHouse(Runnable fill, boolean keep) {
+            IntegrationsActivity s = screen;
+            working = true;
+            if (!keep) say(s.getString(R.string.meross_reading_house), false);
+            fill.run();
+            JSONArray uuids = new JSONArray();
+            for (int i = 0; i < accountDevices.length(); i++) uuids.put(uuidAt(i));
+            s.probe.execute(() -> {
+                JSONObject found = null;
+                String failure = null;
+                try { found = Setup.merossHouse(s, uuids); }
+                catch (Exception e) { failure = String.valueOf(e.getMessage()); }
+                JSONObject got = found;
+                String why = failure;
+                s.handler.post(() -> {
+                    working = false;
+                    if (s.isDestroyed()) return;
+                    if (got != null) {
+                        houseRead = true;
+                        inHouse.clear();
+                        for (java.util.Iterator<String> it = got.keys(); it.hasNext(); ) {
+                            String uuid = it.next();
+                            inHouse.put(uuid.toLowerCase(Locale.ROOT), got.optJSONObject(uuid));
+                        }
+                    }
+                    if (why != null) say(s.getString(R.string.meross_house_failed, why), true);
+                    else if (!keep) say(null, false);
+                    fill.run();
+                });
+            });
+        }
+
+        /** Where `uuids` answer on the network (plugs.rs `find`): never on the UI thread. */
+        private Map<String, String> findAddresses(List<String> uuids) throws Exception {
+            JSONArray wanted = new JSONArray();
+            for (String uuid : uuids) wanted.put(uuid);
+            JSONObject where = Setup.merossFind(screen, accountKey, wanted);
+            Map<String, String> found = new HashMap<>();
+            for (java.util.Iterator<String> it = where.keys(); it.hasNext(); ) {
+                String uuid = it.next();
+                found.put(uuid.toLowerCase(Locale.ROOT), where.optString(uuid));
+            }
+            return found;
+        }
+
+        private boolean outcomesGood() {
+            for (String o : outcomes.values())
+                if (!o.equals("added") && !o.equals("already") && !o.equals("renamed")) return false;
+            return true;
+        }
+
+        private void say(String message, boolean bad) { progressText = message; progressBad = bad; }
+
+        private String uuidAt(int i) { return accountDevices.optJSONObject(i).optString("uuid").toLowerCase(Locale.ROOT); }
+
+        /** "meross", "keep" (a plug of the house) or "typed". */
+        private String choiceOf(int i) {
+            String uuid = uuidAt(i);
+            String c = choices.get(uuid);
+            if (c == null || (c.equals("keep") && !inHouse.containsKey(uuid))) return inHouse.containsKey(uuid) ? "keep" : "meross";
+            return c;
+        }
+
+        /** The name the plug should carry in Moli; null to leave it as it is (or none typed). */
+        private String chosenName(int i) {
+            String uuid = uuidAt(i);
+            switch (choiceOf(i)) {
+                case "keep": return null;
+                case "typed": {
+                    String t = typed.get(uuid);
+                    t = t == null ? "" : t.trim();
+                    return t.isEmpty() ? null : t;
+                }
+                default: return accountDevices.optJSONObject(i).optString("name");
+            }
+        }
+
+        private void fillTable(TableLayout table) {
+            IntegrationsActivity s = screen;
+            table.removeAllViews();
+            TableRow head = new TableRow(s);
+            int[] titles = { R.string.meross_col_plug, R.string.meross_col_details, R.string.meross_col_cloud,
+                    R.string.meross_col_address, R.string.meross_col_house, R.string.meross_col_name, R.string.meross_col_outcome };
+            for (int t : titles) head.addView(cell(s.text(s.getString(t), 13, MUTED, true)));
+            table.addView(head);
+            for (int i = 0; i < accountDevices.length(); i++) table.addView(plugRow(i));
+        }
+
+        private View cell(View v) {
+            v.setPadding(screen.dp(8), screen.dp(8), screen.dp(12), screen.dp(8));
+            return v;
+        }
+
+        private TableRow plugRow(int i) {
+            IntegrationsActivity s = screen;
+            JSONObject d = accountDevices.optJSONObject(i);
+            String uuid = uuidAt(i);
+            TableRow row = new TableRow(s);
+            row.setBackgroundColor(i % 2 == 0 ? PAGE : CARD);
+
+            LinearLayout plug = s.column();
+            plug.addView(s.text(d.optString("name"), 15, INK, true));
+            String model = join(" · ", d.optString("model"), d.optString("subtype"));
+            if (!model.isEmpty()) plug.addView(s.text(model, 13, MUTED, false));
+            row.addView(cell(plug));
+
+            LinearLayout details = s.column();
+            String versions = join(" · ",
+                    d.optString("firmware").isEmpty() ? "" : s.getString(R.string.meross_firmware, d.optString("firmware")),
+                    d.optString("hardware").isEmpty() ? "" : s.getString(R.string.meross_hardware, d.optString("hardware")));
+            if (!versions.isEmpty()) details.addView(s.text(versions, 13, INK, false));
+            long bound = d.optLong("bound");
+            if (bound > 0) details.addView(s.text(s.getString(R.string.meross_bound,
+                    java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(new java.util.Date(bound * 1000))), 13, MUTED, false));
+            JSONArray channels = d.optJSONArray("channels");
+            if (channels != null && channels.length() > 0) {
+                List<String> names = new ArrayList<>();
+                for (int c = 0; c < channels.length(); c++) names.add(channels.optString(c));
+                details.addView(s.text(s.getString(R.string.meross_channels, String.join(", ", names)), 13, MUTED, false));
+            }
+            row.addView(cell(details));
+
+            String online = d.optString("online");
+            int cloud = online.equals("online") ? R.string.meross_cloud_online : online.equals("offline") ? R.string.meross_cloud_offline
+                    : online.equals("updating") ? R.string.meross_cloud_updating : R.string.meross_cloud_unknown;
+            row.addView(cell(s.text(s.getString(cloud), 14, online.equals("online") ? OK : online.equals("offline") ? WARN : MUTED, false)));
+
+            String address = addresses.get(uuid);
+            TextView at = s.text(address != null ? address + "  ⧉" : searched ? s.getString(R.string.meross_not_found) : "—", 14,
+                    address != null ? ACCENT : MUTED, false);
+            if (address != null) at.setOnClickListener(v -> copyText(address, R.string.meross_address_copied));
+            row.addView(cell(at));
+
+            JSONObject device = inHouse.get(uuid);
+            row.addView(cell(s.text(device != null ? device.optString("name") : houseRead ? s.getString(R.string.meross_not_in_house) : "…",
+                    14, device != null ? INK : MUTED, device != null)));
+
+            row.addView(cell(nameChoice(i, d, device)));
+
+            String outcome = outcomes.get(uuid);
+            row.addView(cell(s.text(outcome == null ? "" : words(outcome, online.equals("online")), 13,
+                    outcome != null && (outcome.equals("added") || outcome.equals("already") || outcome.equals("renamed")) ? OK : WARN, true)));
+            return row;
+        }
+
+        /** Meross's name, the current one (a plug of the house), or a name typed. */
+        private View nameChoice(int i, JSONObject d, JSONObject device) {
+            IntegrationsActivity s = screen;
+            String uuid = uuidAt(i);
+            List<String> keys = new ArrayList<>(), labels = new ArrayList<>();
+            if (device != null) { keys.add("keep"); labels.add(s.getString(R.string.meross_name_keep, device.optString("name"))); }
+            keys.add("meross"); labels.add(s.getString(R.string.meross_name_meross, d.optString("name")));
+            keys.add("typed"); labels.add(s.getString(R.string.meross_name_typed));
+            LinearLayout box = s.column();
+            Spinner pick = new Spinner(s);
+            android.widget.ArrayAdapter<String> adapter = new android.widget.ArrayAdapter<>(s, android.R.layout.simple_spinner_item, labels);
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+            pick.setAdapter(adapter);
+            pick.setSelection(keys.indexOf(choiceOf(i)));
+            box.addView(pick, new LinearLayout.LayoutParams(s.dp(260), ViewGroup.LayoutParams.WRAP_CONTENT));
+            EditText name = s.field(s.getString(R.string.meross_name_hint), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+            name.setText(typed.containsKey(uuid) ? typed.get(uuid) : "");
+            name.setFilters(new android.text.InputFilter[] { new android.text.InputFilter.LengthFilter(60) });
+            name.setVisibility("typed".equals(choiceOf(i)) ? View.VISIBLE : View.GONE);
+            name.addTextChangedListener(new TextWatcher() {
+                @Override public void beforeTextChanged(CharSequence c, int a, int b, int n) {}
+                @Override public void onTextChanged(CharSequence c, int a, int b, int n) {}
+                @Override public void afterTextChanged(Editable e) { typed.put(uuid, e.toString()); }
+            });
+            box.addView(name, new LinearLayout.LayoutParams(s.dp(260), ViewGroup.LayoutParams.WRAP_CONTENT));
+            pick.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+                @Override public void onItemSelected(android.widget.AdapterView<?> parent, View v, int position, long id) {
+                    choices.put(uuid, keys.get(position));
+                    boolean typing = keys.get(position).equals("typed");
+                    name.setVisibility(typing ? View.VISIBLE : View.GONE);
+                    if (typing && name.getText().length() == 0) {
+                        name.setText(device != null ? device.optString("name") : d.optString("name"));
+                        name.requestFocus();
+                    }
+                }
+                @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
+            });
+            return box;
+        }
+
+        private static String join(String sep, String... parts) {
+            List<String> kept = new ArrayList<>();
+            for (String p : parts) if (p != null && !p.isEmpty()) kept.add(p);
+            return String.join(sep, kept);
         }
 
         /** What became of a plug, in words. */
@@ -834,10 +1092,17 @@ public final class IntegrationsActivity extends Activity {
             switch (outcome) {
                 case "added": return screen.getString(R.string.meross_added);
                 case "already": return screen.getString(R.string.meross_already);
+                case "renamed": return screen.getString(R.string.meross_renamed);
+                case "no_name": return screen.getString(R.string.meross_no_name);
                 case "missing": return screen.getString(online ? R.string.meross_missing_plug : R.string.meross_offline);
                 case "unreachable": return screen.getString(R.string.meross_moli_silent);
                 default: return screen.getString(R.string.meross_add_refused, outcome);
             }
+        }
+
+        private void copyText(String value, int done) {
+            screen.getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Meross", value));
+            android.widget.Toast.makeText(screen, done, android.widget.Toast.LENGTH_SHORT).show();
         }
 
         private void copy(String key) {

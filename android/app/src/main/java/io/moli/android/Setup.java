@@ -56,6 +56,25 @@ final class Setup {
         return new JSONObject(call("meross_add", config(context).getPath(), "", body));
     }
 
+    /**
+     * Which of the account's plugs the house runs (plugs.rs `house`):
+     * `{uuid: {id, name}}`, the name as the dashboard shows it.
+     */
+    static JSONObject merossHouse(Context context, JSONArray uuids) throws Exception {
+        String pin = ProtectedKey.open(context)[1];
+        String body = new JSONObject().put("port", MoliService.port).put("pin", pin)
+                .put("uuids", uuids).toString();
+        return new JSONObject(call("meross_house", config(context).getPath(), "", body));
+    }
+
+    /** Renames devices ([{id, name}]) as the dashboard does: `{id: "renamed" | Moli's error}`. */
+    static JSONObject merossRename(Context context, JSONArray devices) throws Exception {
+        String pin = ProtectedKey.open(context)[1];
+        String body = new JSONObject().put("port", MoliService.port).put("pin", pin)
+                .put("devices", devices).toString();
+        return new JSONObject(call("meross_rename", config(context).getPath(), "", body));
+    }
+
     /** Which of `names` the vault holds for `instance` (never their values). */
     static JSONArray stored(Context context, String instance, JSONArray names) throws Exception {
         if (names.length() == 0) return new JSONArray();
