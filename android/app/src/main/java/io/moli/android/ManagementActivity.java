@@ -74,6 +74,8 @@ public final class ManagementActivity extends Activity {
                 startActivity(new Intent(this, DashboardActivity.class)));
         button(root, R.string.integrations, () ->
                 startActivity(new Intent(this, IntegrationsActivity.class)));
+        button(root, R.string.network, () ->
+                startActivity(new Intent(this, NetworkActivity.class)));
         button(root, R.string.backup, this::chooseBackup);
         button(root, R.string.restore, this::chooseRestore);
         button(root, R.string.key_title, this::showKey);

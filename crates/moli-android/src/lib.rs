@@ -3,6 +3,7 @@
 //! own; `Setup.java` is the integrations screen ([`setup`]).
 
 pub mod meross;
+pub mod network;
 pub mod plugs;
 pub mod setup;
 
@@ -241,6 +242,7 @@ fn call(action: &str, config: &Path, key: String, body: &str) -> anyhow::Result<
         "meross_add" => plugs::add(&serde_json::from_str(body)?)?.to_string(),
         "meross_house" => plugs::house(&serde_json::from_str(body)?)?.to_string(),
         "meross_rename" => plugs::rename(&serde_json::from_str(body)?)?.to_string(),
+        "network_scan" => network::scan(&serde_json::from_str(body)?)?.to_string(),
         other => anyhow::bail!("unknown action {other:?}"),
     })
 }
