@@ -273,6 +273,9 @@ public final class IntegrationsActivity extends Activity {
         housePane.setVisibility(housePaneShown);
         if (gap != null) gap.setVisibility(housePaneShown);
         side.removeAllViews();
+        // Each pane opens at its top.
+        for (android.view.ViewParent p = side.getParent(); p != null; p = p.getParent())
+            if (p instanceof ScrollView) { ScrollView top = (ScrollView) p; top.post(() -> top.scrollTo(0, 0)); break; }
         if (form != null) { form.show(side); return; }
         side.addView(heading(getString(R.string.setup_catalogue)));
         EditText search = field(getString(R.string.setup_search), InputType.TYPE_CLASS_TEXT);
@@ -653,18 +656,22 @@ public final class IntegrationsActivity extends Activity {
             return false;
         }
 
-        /** The Meross account's key, read once (DECISIONS 7); kept while the form is open. */
-        private String accountKey;
+        /*
+         * The Meross account as read (DECISIONS 7), kept while the app runs:
+         * leaving the form or the screen loses nothing (the password is
+         * never kept). UI thread only.
+         */
+        private static String accountKey;
         /** The account's devices (meross.rs `devices_of`), in the account's order. */
-        private JSONArray accountDevices = new JSONArray();
+        private static JSONArray accountDevices = new JSONArray();
         /** By uuid in lower case: address found, device in the house, name chosen, outcome. */
-        private final Map<String, String> addresses = new HashMap<>(), choices = new HashMap<>(),
+        private static final Map<String, String> addresses = new HashMap<>(), choices = new HashMap<>(),
                 typed = new HashMap<>(), outcomes = new HashMap<>();
-        private final Map<String, JSONObject> inHouse = new HashMap<>();
-        private boolean working, searched, houseRead;
+        private static final Map<String, JSONObject> inHouse = new HashMap<>();
+        private static boolean searched, houseRead, askCode;
+        private boolean working;
         private String progressText;
         private boolean progressBad;
-        private boolean askCode;
 
         /**
          * The key of the Meross account, read from the account as meross_lan
@@ -791,7 +798,8 @@ public final class IntegrationsActivity extends Activity {
                 apply.setEnabled(!working && houseRead);
             };
             fill[0].run();
-            if (!houseRead && !working) readHouse(fill[0], false);
+            // The house may have changed since: read again at each opening.
+            if (!working) readHouse(fill[0], false);
 
             search.setOnClickListener(v -> {
                 working = true;
