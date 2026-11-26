@@ -166,4 +166,20 @@
     <string name="meross_name_meross">Nom Meross « %1$s »</string>
     <string name="meross_name_typed">Autre nom…</string>
     <string name="meross_name_hint">Nom dans Moli</string>
+    <string name="network">Recherche réseau</string>
+    <string name="network_search">Rechercher</string>
+    <string name="network_searching">Recherche des appareils du réseau… (une quinzaine de secondes)</string>
+    <string name="network_failed">La recherche s’est arrêtée : %1$s</string>
+    <plurals name="network_found">
+        <item quantity="one">%1$d appareil trouvé (%2$s). Touchez une ligne pour copier son adresse.</item>
+        <item quantity="other">%1$d appareils trouvés (%2$s). Touchez une ligne pour copier son adresse.</item>
+    </plurals>
+    <string name="network_col_address">Adresse IP</string>
+    <string name="network_col_name">Nom</string>
+    <string name="network_col_maker">Fabricant</string>
+    <string name="network_col_model">Modèle</string>
+    <string name="network_col_mac">Adresse MAC</string>
+    <string name="network_role_tablet">Cette tablette</string>
+    <string name="network_role_box">Box</string>
+    <string name="network_copied">%1$s copiée.</string>
 </resources>

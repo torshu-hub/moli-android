@@ -53,18 +53,47 @@ final class Setup {
      * Null if none (plugs.rs then takes the default route's).
      */
     static String homeAddress(Context context) {
+        android.net.LinkProperties link = homeLink(context);
+        if (link == null) return null;
+        for (android.net.LinkAddress a : link.getLinkAddresses())
+            if (a.getAddress() instanceof java.net.Inet4Address) return a.getAddress().getHostAddress();
+        return null;
+    }
+
+    /** The box: the IPv4 gateway of the home network's default route. Null if none. */
+    static String homeGateway(Context context) {
+        android.net.LinkProperties link = homeLink(context);
+        if (link == null) return null;
+        for (android.net.RouteInfo r : link.getRoutes())
+            if (r.isDefaultRoute() && r.getGateway() instanceof java.net.Inet4Address)
+                return r.getGateway().getHostAddress();
+        return null;
+    }
+
+    /** The Wi-Fi or Ethernet link, never a VPN's. */
+    private static android.net.LinkProperties homeLink(Context context) {
         android.net.ConnectivityManager cm = context.getSystemService(android.net.ConnectivityManager.class);
         if (cm == null) return null;
         for (android.net.Network n : cm.getAllNetworks()) {
             android.net.NetworkCapabilities caps = cm.getNetworkCapabilities(n);
             android.net.LinkProperties link = cm.getLinkProperties(n);
             if (caps == null || link == null || caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) continue;
-            if (!caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
-                    && !caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)) continue;
-            for (android.net.LinkAddress a : link.getLinkAddresses())
-                if (a.getAddress() instanceof java.net.Inet4Address) return a.getAddress().getHostAddress();
+            if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                    || caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)) return link;
         }
         return null;
+    }
+
+    /**
+     * The devices of the home network (network.rs `scan`): `[{ip, name,
+     * maker, model, mac, role}]`, the empty ones null. Network: never on the UI thread.
+     */
+    static JSONArray networkScan(Context context) throws Exception {
+        JSONObject body = new JSONObject();
+        String own = homeAddress(context), gateway = homeGateway(context);
+        if (own != null) body.put("own", own);
+        if (gateway != null) body.put("gateway", gateway);
+        return new JSONArray(call("network_scan", config(context).getPath(), "", body.toString()));
     }
 
     /**

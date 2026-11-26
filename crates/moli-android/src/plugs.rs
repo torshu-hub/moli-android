@@ -70,7 +70,7 @@ pub fn find(request: &Find) -> anyhow::Result<Json> {
 
 /// The other host addresses of the tablet's /24, on a private network:
 /// around `own`, else the default route's address.
-fn home_network(own: Option<Ipv4Addr>) -> anyhow::Result<Vec<Ipv4Addr>> {
+pub(crate) fn home_network(own: Option<Ipv4Addr>) -> anyhow::Result<Vec<Ipv4Addr>> {
     let own = if let Some(own) = own {
         own
     } else {
