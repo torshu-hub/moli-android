@@ -106,16 +106,22 @@ public final class DashboardActivity extends Activity {
     }
 
     /**
-     * Back climbs the dashboard's routes instead of replaying every page seen:
-     * a sub-page goes to its section, a section to the home page, the home
-     * page to the management screen.
+     * Back follows the dashboard's trail instead of replaying every page seen:
+     * the page this one was opened from, then the home page, then the
+     * management screen.
      */
     @Override public void onBackPressed() {
         if (!loaded) { super.onBackPressed(); return; }
-        web.evaluateJavascript("location.hash", value -> {
-            String parent = parentRoute(value);
-            if (parent == null) finish();
-            else web.evaluateJavascript("location.hash = " + org.json.JSONObject.quote(parent), null);
+        // The dashboard keeps the trail of pages (window.moliBack); a page
+        // without it falls back to the route one level up.
+        web.evaluateJavascript("window.moliBack ? String(window.moliBack()) : 'none'", result -> {
+            if ("\"true\"".equals(result)) return;
+            if ("\"false\"".equals(result)) { finish(); return; }
+            web.evaluateJavascript("location.hash", value -> {
+                String parent = parentRoute(value);
+                if (parent == null) finish();
+                else web.evaluateJavascript("location.hash = " + org.json.JSONObject.quote(parent), null);
+            });
         });
     }
 
