@@ -587,7 +587,7 @@ public final class IntegrationsActivity extends Activity {
                 Button go = s.primary(s.getString(R.string.setup_open_add));
                 go.setOnClickListener(v -> s.openDashboard("#/ajouter"));
                 panel.addView(go, s.matchWrap(0, s.dp(12), 0, 0));
-                if (brand("Meross")) side.addView(merossAccount());
+                if (brand("Meross")) { side.addView(merossInHouse()); side.addView(merossAccount()); }
                 guide(side);
                 return;
             }
@@ -656,6 +656,83 @@ public final class IntegrationsActivity extends Activity {
             return false;
         }
 
+        /**
+         * The Meross plugs the house runs, read from Moli without the
+         * account: name in Moli, model, address, and « Retirer » (Moli
+         * restarts, the plug leaves `devices-added.json`, its key the vault).
+         */
+        private View merossInHouse() {
+            IntegrationsActivity s = screen;
+            LinearLayout box = s.card();
+            box.addView(s.text(s.getString(R.string.meross_in_house), 17, INK, true));
+            TextView state = s.text(s.getString(R.string.meross_reading_house), 14, MUTED, false);
+            box.addView(state, s.matchWrap(0, s.dp(4), 0, 0));
+            LinearLayout list = s.column();
+            box.addView(list);
+            s.probe.execute(() -> {
+                JSONObject got = null;
+                String failure = null;
+                try { got = Setup.merossInstalled(s); } catch (Exception e) { failure = String.valueOf(e.getMessage()); }
+                JSONObject read = got;
+                String why = failure;
+                s.handler.post(() -> {
+                    if (s.isDestroyed()) return;
+                    if (read == null) { state.setText(s.getString(R.string.meross_house_failed, why)); state.setTextColor(BAD); return; }
+                    JSONArray plugs = read.optJSONArray("plugs");
+                    int n = plugs == null ? 0 : plugs.length();
+                    state.setText(n == 0 ? s.getString(R.string.meross_in_house_none)
+                            : read.optBoolean("moli") ? s.getString(R.string.meross_in_house_help)
+                            : s.getString(R.string.meross_in_house_no_moli));
+                    for (int i = 0; i < n; i++) list.addView(installedRow(plugs.optJSONObject(i), state));
+                });
+            });
+            return box;
+        }
+
+        private View installedRow(JSONObject plug, TextView state) {
+            IntegrationsActivity s = screen;
+            LinearLayout line = s.row();
+            line.setGravity(Gravity.CENTER_VERTICAL);
+            line.setPadding(0, s.dp(10), 0, 0);
+            LinearLayout what = s.column();
+            String name = plug.optString("name");
+            what.addView(s.text(name.isEmpty() ? plug.optString("instance") : name, 15, INK, true));
+            what.addView(s.text(join(" · ", plug.optString("profile").replace("meross-", "").toUpperCase(Locale.ROOT),
+                    plug.optString("host"), plug.optString("instance")), 13, MUTED, false));
+            line.addView(what, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            Button out = s.flat(s.getString(R.string.setup_remove));
+            out.setTextColor(BAD);
+            out.setBackground(s.stroke(PAGE, BAD, 10));
+            out.setOnClickListener(v -> {
+                if (s.busy) return;
+                s.busy = true;
+                out.setEnabled(false);
+                state.setText(R.string.meross_removing);
+                state.setTextColor(INFO);
+                s.probe.execute(() -> {
+                    String why;
+                    try { why = Setup.removePlug(s, plug.optString("instance")); }
+                    catch (Exception e) { why = String.valueOf(e.getMessage()); }
+                    String refused = why;
+                    s.handler.post(() -> {
+                        s.busy = false;
+                        if (s.isDestroyed()) return;
+                        if (refused == null) {
+                            android.widget.Toast.makeText(s, R.string.meross_removed, android.widget.Toast.LENGTH_LONG).show();
+                            s.showSide();
+                        } else {
+                            out.setEnabled(true);
+                            state.setText(refused.equals("not_added_here") ? s.getString(R.string.meross_remove_elsewhere)
+                                    : s.getString(R.string.meross_remove_failed, refused));
+                            state.setTextColor(BAD);
+                        }
+                    });
+                });
+            });
+            line.addView(out, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, s.dp(44)));
+            return line;
+        }
+
         /*
          * The Meross account as read (DECISIONS 7), kept while the app runs:
          * leaving the form or the screen loses nothing (the password is
@@ -670,8 +747,6 @@ public final class IntegrationsActivity extends Activity {
         private static final Map<String, JSONObject> inHouse = new HashMap<>();
         private static boolean searched, houseRead, askCode;
         private boolean working;
-        /** Redraws the plugs table (set when it is built). */
-        private Runnable fillAgain;
         private String progressText;
         private boolean progressBad;
 
@@ -799,7 +874,6 @@ public final class IntegrationsActivity extends Activity {
                 search.setEnabled(!working);
                 apply.setEnabled(!working && houseRead);
             };
-            fillAgain = fill[0];
             fill[0].run();
             // The house may have changed since: read again at each opening.
             if (!working) readHouse(fill[0], false);
@@ -906,30 +980,6 @@ public final class IntegrationsActivity extends Activity {
             });
         }
 
-        /** « Retirer »: the plug leaves the house (Moli restarts), then the table is read again. */
-        private void removePlug(String uuid, String deviceId) {
-            IntegrationsActivity s = screen;
-            if (fillAgain == null) return;
-            working = true;
-            outcomes.remove(uuid);
-            say(s.getString(R.string.meross_removing), false);
-            fillAgain.run();
-            s.probe.execute(() -> {
-                String why;
-                try { why = Setup.removePlug(s, deviceId.split(":", 2)[0]); }
-                catch (Exception e) { why = String.valueOf(e.getMessage()); }
-                String refused = why;
-                s.handler.post(() -> {
-                    working = false;
-                    if (s.isDestroyed()) return;
-                    if (refused == null) { outcomes.put(uuid, "removed"); say(s.getString(R.string.meross_removed), false); }
-                    else if (refused.equals("not_added_here")) say(s.getString(R.string.meross_remove_elsewhere), true);
-                    else say(s.getString(R.string.meross_remove_failed, refused), true);
-                    readHouse(fillAgain, true);
-                });
-            });
-        }
-
         /** Reads the house's plugs, then refreshes; `keep`: the message shown stays. */
         private void readHouse(Runnable fill, boolean keep) {
             IntegrationsActivity s = screen;
@@ -1013,7 +1063,7 @@ public final class IntegrationsActivity extends Activity {
             table.removeAllViews();
             TableRow head = new TableRow(s);
             int[] titles = { R.string.meross_col_plug, R.string.meross_col_details, R.string.meross_col_cloud,
-                    R.string.meross_col_address, R.string.meross_col_house, R.string.meross_col_name, R.string.meross_col_outcome, R.string.meross_col_remove };
+                    R.string.meross_col_address, R.string.meross_col_house, R.string.meross_col_name, R.string.meross_col_outcome };
             for (int t : titles) head.addView(cell(s.text(s.getString(t), 13, MUTED, true)));
             table.addView(head);
             for (int i = 0; i < accountDevices.length(); i++) table.addView(plugRow(i));
@@ -1072,18 +1122,8 @@ public final class IntegrationsActivity extends Activity {
 
             String outcome = outcomes.get(uuid);
             row.addView(cell(s.text(outcome == null ? "" : words(outcome, online.equals("online")), 13,
-                    outcome != null && (outcome.equals("added") || outcome.equals("already") || outcome.equals("renamed") || outcome.equals("removed")) ? OK : WARN, true)));
+                    outcome != null && (outcome.equals("added") || outcome.equals("already") || outcome.equals("renamed")) ? OK : WARN, true)));
 
-            if (device != null) {
-                Button out = s.flat(s.getString(R.string.setup_remove));
-                out.setTextColor(BAD);
-                out.setBackground(s.stroke(PAGE, BAD, 10));
-                out.setEnabled(!working);
-                out.setOnClickListener(v -> removePlug(uuid, device.optString("id")));
-                row.addView(cell(out));
-            } else {
-                row.addView(cell(s.text("", 13, MUTED, false)));
-            }
             return row;
         }
 
@@ -1139,7 +1179,6 @@ public final class IntegrationsActivity extends Activity {
                 case "added": return screen.getString(R.string.meross_added);
                 case "already": return screen.getString(R.string.meross_already);
                 case "renamed": return screen.getString(R.string.meross_renamed);
-                case "removed": return screen.getString(R.string.meross_removed_short);
                 case "no_name": return screen.getString(R.string.meross_no_name);
                 case "missing": return screen.getString(online ? R.string.meross_missing_plug : R.string.meross_offline);
                 case "unreachable": return screen.getString(R.string.meross_moli_silent);

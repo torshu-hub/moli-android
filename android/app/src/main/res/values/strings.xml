@@ -14,7 +14,7 @@
     <string name="setup_house">Dans la maison</string>
     <string name="setup_house_empty">Aucune intégration pour l’instant. Choisissez-en une dans le catalogue.</string>
     <string name="setup_see_dashboard">Voir dans le tableau de bord (Système)</string>
-    <string name="setup_added_elsewhere">Les appareils ajoutés par leur adresse (tableau de bord, « Ajouter un appareil ») se gèrent là-bas.</string>
+    <string name="setup_added_elsewhere">Les appareils ajoutés par leur adresse (tableau de bord, « Ajouter un appareil ») se gèrent là-bas ; les prises Meross aussi dans leur fiche (liste, Retirer).</string>
     <string name="setup_catalogue">Catalogue</string>
     <string name="setup_search">Rechercher (nom, marque, modèle)</string>
     <string name="setup_nothing_found">Rien dans le catalogue officiel pour cette recherche.</string>
@@ -183,10 +183,8 @@
     <string name="network_role_tablet">Cette tablette</string>
     <string name="network_role_box">Box</string>
     <string name="network_copied">%1$s copiée.</string>
-    <string name="meross_col_remove">Retirer</string>
     <string name="meross_removing">Retrait de la prise, Moli redémarre…</string>
     <string name="meross_removed">Prise retirée de la maison. Son historique et son nom restent dans Moli.</string>
-    <string name="meross_removed_short">Retirée</string>
     <string name="meross_remove_elsewhere">Cette prise n’a pas été ajoutée par « Ajouter un appareil » : elle est écrite dans moli.toml.</string>
     <string name="meross_remove_failed">Retrait impossible : %1$s</string>
     <string name="integrations_help">Ajouter, régler, retirer</string>
@@ -194,4 +192,8 @@
     <string name="house_title">La maison</string>
     <string name="direct_launch">Ouvrir Moli au lancement</string>
     <string name="direct_launch_help">L’appli s’ouvre directement sur Moli. Retour depuis sa première page ramène ici.</string>
+    <string name="meross_in_house">Prises Meross dans la maison</string>
+    <string name="meross_in_house_help">Ajoutées par leur adresse. Retirer : Moli redémarre, la prise sort de la maison ; son historique reste.</string>
+    <string name="meross_in_house_none">Aucune prise Meross ajoutée par son adresse.</string>
+    <string name="meross_in_house_no_moli">Moli ne répond pas : noms indisponibles, retrait possible quand même.</string>
 </resources>
