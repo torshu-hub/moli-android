@@ -667,4 +667,80 @@ mod tests {
         forget(&config, &key, "prise", &names).unwrap();
         assert!(stored(&config, &key, "prise", &names).unwrap().is_empty());
     }
+
+    fn health(port: u16) -> Option<String> {
+        use std::io::{Read as _, Write as _};
+        let mut socket = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok()?;
+        write!(
+            socket,
+            "GET /api/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        )
+        .ok()?;
+        let mut response = String::new();
+        socket.read_to_string(&mut response).ok()?;
+        Some(response).filter(|r| r.starts_with("HTTP/1.1 200"))
+    }
+
+    #[test]
+    fn the_official_engine_runs_what_the_screen_writes_and_refuses_the_rest() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (_dir, config) = house("engine", "");
+        let text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(
+            &config,
+            text.replace(
+                "[server]\n",
+                &format!("[server]\nlisten = \"127.0.0.1:{port}\"\n"),
+            ),
+        )
+        .unwrap();
+        let key = MasterKey::generate().unwrap();
+        put(
+            &config,
+            &change(
+                r#"{"id":"meteo","integration":"open-meteo","vars":{"lat":"48.85","lon":"2.35"}}"#,
+            ),
+        )
+        .unwrap();
+        let moli = moli_os::hosted::Hosted::start(&config, key.clone(), "482913".into()).unwrap();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut seen = None;
+        while std::time::Instant::now() < end {
+            seen = health(port);
+            if seen.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let seen = seen.expect("Moli never answered");
+        assert!(seen.contains(r#""instance":"meteo""#), "{seen}");
+        moli.stop().unwrap();
+
+        // A block the engine refuses (an option of the wrong type): Moli does
+        // not run with it, and the previous file comes back.
+        settle(&config);
+        put(
+            &config,
+            &change(r#"{"id":"kasa","integration":"kasa","fields":{"host":"192.168.1.20","port":"not a port"}}"#),
+        )
+        .unwrap();
+        let refused = moli_os::hosted::Hosted::start(&config, key.clone(), "482913".into())
+            .and_then(|m| {
+                let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                while m.running() && std::time::Instant::now() < end {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                m.stop()
+            });
+        assert!(refused.is_err(), "the engine took a bad block");
+        rollback(&config).unwrap();
+        assert!(!std::fs::read_to_string(&config).unwrap().contains("kasa"));
+    }
 }
