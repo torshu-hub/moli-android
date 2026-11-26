@@ -323,9 +323,6 @@
       {#await import('./pages/Somfy.svelte') then { default: Somfy }}<Somfy />{/await}
     {:else if page === 'systeme'}
       <Systeme />
-    {:else if page === 'integrations'}
-      <!-- The integrations catalogue and setup: loaded only when visited. -->
-      {#await import('./pages/Integrations.svelte') then { default: Integrations }}<Integrations />{/await}
     {:else if page === 'ajouter'}
       <!-- Adding a device by its address: loaded only when visited. -->
       {#await import('./pages/Ajouter.svelte') then { default: Ajouter }}<Ajouter />{/await}

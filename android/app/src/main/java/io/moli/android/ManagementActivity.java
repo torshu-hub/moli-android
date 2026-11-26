@@ -73,7 +73,7 @@ public final class ManagementActivity extends Activity {
         open = button(root, R.string.open_dashboard, () ->
                 startActivity(new Intent(this, DashboardActivity.class)));
         button(root, R.string.integrations, () ->
-                startActivity(new Intent(this, DashboardActivity.class).putExtra(DashboardActivity.ROUTE, "integrations")));
+                startActivity(new Intent(this, IntegrationsActivity.class)));
         button(root, R.string.backup, this::chooseBackup);
         button(root, R.string.restore, this::chooseRestore);
         button(root, R.string.key_title, this::showKey);
