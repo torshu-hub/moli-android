@@ -12,8 +12,14 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 moli-os = { path = "../moli-os" }
 moli-runtime.workspace = true
+moli-profile.workspace = true
 anyhow.workspace = true
 jni = "0.21.1"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+toml.workspace = true
+toml_edit = "0.25"
 
 # The workspace's lints, except `unsafe_code`: JNI entry points need
 # `#[unsafe(no_mangle)]`, and nothing else here is unsafe.

@@ -26,7 +26,9 @@
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:theme="@android:style/Theme.Material.Light.NoActionBar" />
         <activity android:name=".IntegrationsActivity" android:exported="false"
-            android:label="@string/integrations" />
+            android:label="@string/integrations"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize" />
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

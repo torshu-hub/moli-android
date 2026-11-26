@@ -1,5 +1,8 @@
-//! The JNI boundary of the Android app (`NativeServer.java`): start, watch
-//! and stop the official engine ([`moli_os::hosted`]). No logic of its own.
+//! The JNI boundary of the Android app: `NativeServer.java` starts, watches
+//! and stops the official engine ([`moli_os::hosted`]), with no logic of its
+//! own; `Setup.java` is the integrations screen ([`setup`]).
+
+pub mod setup;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
@@ -133,4 +136,103 @@ pub extern "system" fn Java_io_moli_android_NativeServer_failure(
     failure
         .and_then(|f| env.new_string(f).ok())
         .map_or(std::ptr::null_mut(), JString::into_raw)
+}
+
+// ---- Setup.java: the integrations screen ([`setup`]). ----
+
+fn text(env: &mut JNIEnv<'_>, value: &JString<'_>) -> Option<String> {
+    env.get_string(value).ok().map(Into::into)
+}
+
+/// Runs `work` and gives its text to Java; its error is thrown
+/// (`IllegalStateException`), a panic too.
+fn answer(env: &mut JNIEnv<'_>, work: impl FnOnce() -> anyhow::Result<String>) -> jstring {
+    match catch_unwind(AssertUnwindSafe(work)) {
+        Ok(Ok(out)) => env
+            .new_string(out)
+            .map_or(std::ptr::null_mut(), JString::into_raw),
+        Ok(Err(e)) => {
+            throw(env, &format!("{e:#}"));
+            std::ptr::null_mut()
+        }
+        Err(_) => {
+            throw(env, "Moli panicked");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// `static native String call(String action, String config, String key, String body)`:
+/// one entry point for the screen, `action` naming what to do (keeps the
+/// JNI surface to one symbol). Never prints a secret, never returns one.
+// SAFETY: name and signature match Setup.java; this library ships in the APK.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_moli_android_Setup_call(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    action: JString<'_>,
+    config: JString<'_>,
+    key: JString<'_>,
+    body: JString<'_>,
+) -> jstring {
+    let (Some(action), Some(config), Some(key), Some(body)) = (
+        text(&mut env, &action),
+        text(&mut env, &config),
+        text(&mut env, &key),
+        text(&mut env, &body),
+    ) else {
+        throw(&mut env, "invalid arguments");
+        return std::ptr::null_mut();
+    };
+    answer(&mut env, || call(&action, Path::new(&config), key, &body))
+}
+
+/// The secrets of one instance: `{"instance": "…", "names": […]}` or `"values": {…}`.
+#[derive(serde::Deserialize)]
+struct Secrets {
+    instance: String,
+    #[serde(default)]
+    names: Vec<String>,
+    #[serde(default)]
+    values: std::collections::BTreeMap<String, String>,
+}
+
+fn call(action: &str, config: &Path, key: String, body: &str) -> anyhow::Result<String> {
+    let key = MasterKey::new(key);
+    let secrets = || serde_json::from_str::<Secrets>(body);
+    Ok(match action {
+        "catalogue" => setup::catalogue(),
+        "drivers" => setup::drivers(config)?,
+        "put" => {
+            setup::put(config, &serde_json::from_str(body)?)?;
+            String::new()
+        }
+        "remove" => {
+            setup::remove(config, body)?;
+            String::new()
+        }
+        "rollback" => {
+            setup::rollback(config)?;
+            String::new()
+        }
+        "settle" => {
+            setup::settle(config);
+            String::new()
+        }
+        "stored" => {
+            let s = secrets()?;
+            serde_json::to_string(&setup::stored(config, &key, &s.instance, &s.names)?)?
+        }
+        "store" => {
+            let s = secrets()?;
+            setup::store(config, &key, &s.instance, &s.values)?;
+            String::new()
+        }
+        "forget" => {
+            let s = secrets()?;
+            setup::forget(config, &key, &s.instance, &s.names)?;
+            String::new()
+        }
+        other => anyhow::bail!("unknown action {other:?}"),
+    })
 }
