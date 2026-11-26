@@ -111,7 +111,7 @@
     <string name="meross_getting">Connexion à Meross…</string>
     <string name="meross_missing">L’e-mail et le mot de passe du compte Meross.</string>
     <string name="meross_got">Clé récupérée et copiée.</string>
-    <string name="meross_next">Ouvrez « Ajouter un appareil », tapez l’adresse de la première prise, puis collez cette clé quand Moli la demande (appui long dans le champ « Clé de l’appareil »). Pour les prises suivantes, l’adresse suffit : Moli reprend la clé tout seul.</string>
+    <string name="meross_next">Le plus simple : « Ajouter mes prises » ci-dessous. Pour en ajouter une à la main : ouvrez « Ajouter un appareil », tapez son adresse et collez cette clé (appui long dans le champ « Clé de l’appareil ») ; Moli la reprend ensuite tout seul.</string>
     <string name="meross_copy">Copier à nouveau</string>
     <string name="meross_copied">Clé Meross copiée.</string>
     <string name="meross_wrong">Meross refuse cet e-mail ou ce mot de passe.</string>
@@ -121,4 +121,16 @@
     <string name="meross_locked">Meross a bloqué la connexion pour un moment (trop d’essais).</string>
     <string name="meross_refused">Meross a refusé (code %1$d) : %2$s</string>
     <string name="meross_unreachable">Meross ne répond pas : %1$s</string>
+    <string name="meross_plugs">Vos prises Meross (%1$d)</string>
+    <string name="meross_plugs_help">Moli les cherche sur le réseau de la tablette et les ajoute avec le nom de l’appli Meross. Celles déjà dans la maison restent telles quelles. Les pièces se choisissent ensuite dans Moli.</string>
+    <string name="meross_add_all">Ajouter mes prises</string>
+    <string name="meross_finding">Recherche des prises sur le réseau…</string>
+    <string name="meross_adding">Ajout des prises dans Moli… (jusqu’à une minute par prise)</string>
+    <string name="meross_added">Ajoutée</string>
+    <string name="meross_already">Déjà dans la maison</string>
+    <string name="meross_missing_plug">Introuvable sur le réseau</string>
+    <string name="meross_offline">Hors ligne selon Meross</string>
+    <string name="meross_moli_silent">Moli ne répond pas</string>
+    <string name="meross_add_refused">Refusée par Moli (%1$s)</string>
+    <string name="meross_import_failed">L’ajout s’est arrêté : %1$s</string>
 </resources>

@@ -39,6 +39,23 @@ final class Setup {
         return new JSONObject(call("meross_key", config(context).getPath(), "", body.toString()));
     }
 
+    /** Where the account's plugs answer on the home network: `{uuid: address}` (plugs.rs). */
+    static JSONObject merossFind(Context context, String key, JSONArray uuids) throws Exception {
+        String body = new JSONObject().put("key", key).put("uuids", uuids).toString();
+        return new JSONObject(call("meross_find", config(context).getPath(), "", body));
+    }
+
+    /**
+     * Adds `plugs` ([{host, name}]) as « Ajouter un appareil » does, in a
+     * session opened with the house's code: `{host: {outcome, instance}}`.
+     */
+    static JSONObject merossAdd(Context context, String key, JSONArray plugs) throws Exception {
+        String pin = ProtectedKey.open(context)[1];
+        String body = new JSONObject().put("port", MoliService.port).put("pin", pin)
+                .put("key", key).put("plugs", plugs).toString();
+        return new JSONObject(call("meross_add", config(context).getPath(), "", body));
+    }
+
     /** Which of `names` the vault holds for `instance` (never their values). */
     static JSONArray stored(Context context, String instance, JSONArray names) throws Exception {
         if (names.length() == 0) return new JSONArray();

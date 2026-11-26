@@ -110,7 +110,7 @@
     <string name="meross_getting">Connecting to Meross…</string>
     <string name="meross_missing">The Meross account’s e-mail and password.</string>
     <string name="meross_got">Key retrieved and copied.</string>
-    <string name="meross_next">Open “Add a device”, type the first plug’s address, then paste this key when Moli asks for it (long press in the “Device key” field). For the next plugs, the address is enough: Moli reuses the key by itself.</string>
+    <string name="meross_next">Simplest: “Add my plugs” below. To add one by hand: open “Add a device”, type its address and paste this key (long press in the “Device key” field); Moli then reuses it by itself.</string>
     <string name="meross_copy">Copy again</string>
     <string name="meross_copied">Meross key copied.</string>
     <string name="meross_wrong">Meross refuses this e-mail or password.</string>
@@ -120,4 +120,16 @@
     <string name="meross_locked">Meross has locked sign-in for a while (too many attempts).</string>
     <string name="meross_refused">Meross refused (code %1$d): %2$s</string>
     <string name="meross_unreachable">Meross does not answer: %1$s</string>
+    <string name="meross_plugs">Your Meross plugs (%1$d)</string>
+    <string name="meross_plugs_help">Moli looks for them on the tablet’s network and adds them with their name from the Meross app. Those already in the house stay as they are. Rooms are chosen afterwards in Moli.</string>
+    <string name="meross_add_all">Add my plugs</string>
+    <string name="meross_finding">Looking for the plugs on the network…</string>
+    <string name="meross_adding">Adding the plugs to Moli… (up to a minute per plug)</string>
+    <string name="meross_added">Added</string>
+    <string name="meross_already">Already in the house</string>
+    <string name="meross_missing_plug">Not found on the network</string>
+    <string name="meross_offline">Offline according to Meross</string>
+    <string name="meross_moli_silent">Moli does not answer</string>
+    <string name="meross_add_refused">Refused by Moli (%1$s)</string>
+    <string name="meross_import_failed">Adding stopped: %1$s</string>
 </resources>
