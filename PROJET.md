@@ -37,5 +37,6 @@ Une intégration propre, c'est une fonctionnalité complète et native de Moli O
 
 ## Accords
 - Déjà accordés : branches, commits, PR, fusion de tes PR vers main quand la CI est verte et que ton rapport est publié, CI, construction et signature de l'APK par le workflow `android` du dépôt (le lancer ; le modifier seulement à ma demande).
+- Lecture seule accordée (26 nov.) : `rudy-io/moli-os` (Moli officiel, ses PR et branches) et les sources publiques d'intégrations de référence (Home Assistant, pyatmo…), pour appliquer le principe 1. Aucune écriture, aucun commentaire, aucune PR chez eux.
 - À me demander : secrets réels, dépenses, envois ou publications externes, suppressions importantes, commande d'un appareil réel par un agent. Mes essais sur mon matériel n'ont besoin d'aucun accord.
 - Aucun secret ni donnée personnelle dans le dépôt (il est public).

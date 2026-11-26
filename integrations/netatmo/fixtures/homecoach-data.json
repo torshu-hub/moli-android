@@ -1,0 +1,19 @@
+{
+  "body": {
+    "devices": [
+      {
+        "_id": "aa:bb:cc:dd:ee:20",
+        "type": "NHC",
+        "station_name": "Bureau",
+        "module_name": "Bureau",
+        "reachable": true,
+        "wifi_status": 60,
+        "dashboard_data": {
+          "time_utc": 1789999000, "Temperature": 22.0, "CO2": 540, "Humidity": 44, "Noise": 33,
+          "Pressure": 1013.0, "AbsolutePressure": 1004.5, "health_idx": 1, "min_temp": 20.5, "max_temp": 22.4
+        }
+      }
+    ]
+  },
+  "status": "ok"
+}

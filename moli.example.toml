@@ -321,6 +321,16 @@ base_topic = "zigbee2mqtt"
 # installation = 1234567                    # only when the account has several installations
 # redirect_uri = "vicare://oauth-callback/everest"   # only if the API key declares another
 
+# Netatmo thermostats, valves, weather stations and air monitors, through the Netatmo cloud. Needs
+# the master key and three secrets (client_id, client_secret, refresh_token); see
+# integrations/netatmo/onboarding.md.
+# [[driver]]
+# id = "netatmo"
+# kind = "netatmo"
+#
+# [driver.options]
+# home_id = "…"                             # only to read one home of the account
+
 # Synology NAS (DSM, HTTPS). Needs the master key and two secrets (username, password: an administrator
 # account); see integrations/synology/onboarding.md. Orders (wake, shutdown, reboot) need a person's approval.
 # [[driver]]

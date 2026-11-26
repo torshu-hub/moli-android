@@ -1441,6 +1441,7 @@ const KINDS: &[&str] = &[
     "solarman",
     "jackery",
     "vicare",
+    "netatmo",
     "synology",
     "proxmox",
     "philips",
@@ -1726,6 +1727,9 @@ fn build_driver(
         "synology" => configured_driver(config, moli_synology::Synology::new)?,
         "solcast" => configured_driver(config, moli_solcast::Solcast::new)?,
         "proxmox" => configured_driver(config, moli_proxmox::Proxmox::new)?,
+        "netatmo" => Arc::new(moli_netatmo::Netatmo::new(
+            config.options.clone().try_into().with_context(context)?,
+        )),
         "vicare" => Arc::new(moli_vicare::Vicare::new(
             config.options.clone().try_into().with_context(context)?,
         )),

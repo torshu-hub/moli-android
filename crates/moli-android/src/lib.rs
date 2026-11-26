@@ -2,7 +2,9 @@
 //! and stops the official engine ([`moli_os::hosted`]), with no logic of its
 //! own; `Setup.java` is the integrations screen ([`setup`]).
 
+pub mod journal;
 pub mod meross;
+pub mod netatmo;
 pub mod network;
 pub mod plugs;
 pub mod setup;
@@ -51,6 +53,7 @@ fn start(config: &str, key: String, pin: String) -> anyhow::Result<u16> {
         return Ok(running.port());
     }
     slot.failure = None;
+    journal::start(Path::new(config));
     let moli = Hosted::start(Path::new(config), MasterKey::new(key), pin)?;
     let port = moli.port();
     slot.running = Some(moli);
@@ -237,6 +240,13 @@ fn call(action: &str, config: &Path, key: String, body: &str) -> anyhow::Result<
             setup::forget(config, &key, &s.instance, &s.names)?;
             String::new()
         }
+        "netatmo_begin" => netatmo::begin(config, &key, &serde_json::from_str(body)?)?.to_string(),
+        "netatmo_wait" => netatmo::wait(config, &key, body)?.to_string(),
+        "netatmo_cancel" => {
+            netatmo::cancel();
+            String::new()
+        }
+        "journal" => journal::tail(config),
         "meross_key" => meross::key(&serde_json::from_str(body)?)?.to_string(),
         "meross_find" => plugs::find(&serde_json::from_str(body)?)?.to_string(),
         "meross_add" => plugs::add(&serde_json::from_str(body)?)?.to_string(),

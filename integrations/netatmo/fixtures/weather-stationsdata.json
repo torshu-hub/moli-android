@@ -1,0 +1,31 @@
+{
+  "body": {
+    "devices": [
+      {
+        "_id": "aa:bb:cc:dd:ee:10",
+        "type": "NAMain",
+        "station_name": "Station",
+        "module_name": "Salon",
+        "reachable": true,
+        "wifi_status": 52,
+        "data_type": ["Temperature", "CO2", "Humidity", "Noise", "Pressure"],
+        "dashboard_data": {
+          "time_utc": 1789999000, "Temperature": 21.3, "CO2": 612, "Humidity": 47, "Noise": 36,
+          "Pressure": 1013.2, "AbsolutePressure": 1004.7, "min_temp": 19.8, "max_temp": 22.1,
+          "temp_trend": "stable", "pressure_trend": "up"
+        },
+        "modules": [
+          {"_id": "aa:bb:cc:dd:ee:11", "type": "NAModule1", "module_name": "Extérieur", "reachable": true, "battery_percent": 78, "rf_status": 66,
+           "dashboard_data": {"time_utc": 1789999000, "Temperature": 9.4, "Humidity": 81, "min_temp": 7.2, "max_temp": 11.0, "temp_trend": "down"}},
+          {"_id": "aa:bb:cc:dd:ee:12", "type": "NAModule2", "module_name": "Vent", "reachable": true, "battery_percent": 64, "rf_status": 70,
+           "dashboard_data": {"time_utc": 1789999000, "WindStrength": 11, "WindAngle": 225, "GustStrength": 22, "GustAngle": 250}},
+          {"_id": "aa:bb:cc:dd:ee:13", "type": "NAModule3", "module_name": "Pluie", "reachable": true, "battery_percent": 90, "rf_status": 61,
+           "dashboard_data": {"time_utc": 1789999000, "Rain": 0.2, "sum_rain_1": 0.6, "sum_rain_24": 3.4}},
+          {"_id": "aa:bb:cc:dd:ee:14", "type": "NAModule4", "module_name": "Chambre", "reachable": true, "battery_percent": 55, "rf_status": 80,
+           "dashboard_data": {"time_utc": 1789999000, "Temperature": 19.1, "CO2": 720, "Humidity": 52, "min_temp": 18.0, "max_temp": 20.0, "temp_trend": "stable"}}
+        ]
+      }
+    ]
+  },
+  "status": "ok"
+}

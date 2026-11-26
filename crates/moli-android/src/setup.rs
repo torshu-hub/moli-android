@@ -406,6 +406,22 @@ pub fn stored(
     Ok(held)
 }
 
+/// One secret of `instance`, if the vault holds it (for the app's own use: a
+/// connection that needs the identifiers already stored).
+pub fn held(
+    config: &Path,
+    key: &MasterKey,
+    instance: &str,
+    name: &str,
+) -> anyhow::Result<Option<String>> {
+    let vault = vault(config)?;
+    if !vault.exists() {
+        return Ok(None);
+    }
+    moli_runtime::get_secret(&vault, key, &format!("{instance}/{name}"))
+        .context("the vault cannot be read with this key")
+}
+
 /// Stores the values given (`moli-os secrets set`); an empty one is left as it is.
 pub fn store(
     config: &Path,
@@ -752,5 +768,48 @@ mod tests {
         assert!(refused.is_err(), "the engine took a bad block");
         rollback(&config).unwrap();
         assert!(!std::fs::read_to_string(&config).unwrap().contains("kasa"));
+    }
+
+    #[test]
+    fn the_official_engine_runs_netatmo_and_waits_for_its_connection() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (_dir, config) = house("netatmo", "");
+        let text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(
+            &config,
+            text.replace(
+                "[server]\n",
+                &format!("[server]\nlisten = \"127.0.0.1:{port}\"\n"),
+            ),
+        )
+        .unwrap();
+        put(
+            &config,
+            &change(r#"{"id":"netatmo","integration":"netatmo"}"#),
+        )
+        .unwrap();
+        let moli = moli_os::hosted::Hosted::start(
+            &config,
+            MasterKey::generate().unwrap(),
+            "482913".into(),
+        )
+        .unwrap();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut seen = None;
+        while std::time::Instant::now() < end {
+            seen = health(port);
+            if seen.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let seen = seen.expect("Moli never answered");
+        // No secret yet: the driver is up and says what it waits for.
+        assert!(seen.contains(r#""instance":"netatmo""#), "{seen}");
+        moli.stop().unwrap();
     }
 }
