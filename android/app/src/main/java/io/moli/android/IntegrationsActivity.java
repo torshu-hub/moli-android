@@ -265,9 +265,9 @@ public final class IntegrationsActivity extends Activity {
     private void showSide() {
         if (side == null) return;
         // An open form takes the whole screen; the house comes back with it closed.
-        int shown = form == null ? View.VISIBLE : View.GONE;
-        housePane.setVisibility(shown);
-        if (gap != null) gap.setVisibility(shown);
+        int housePaneShown = form == null ? View.VISIBLE : View.GONE;
+        housePane.setVisibility(housePaneShown);
+        if (gap != null) gap.setVisibility(housePaneShown);
         side.removeAllViews();
         if (form != null) { form.show(side); return; }
         side.addView(heading(getString(R.string.setup_catalogue)));
