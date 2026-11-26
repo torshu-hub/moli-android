@@ -2,6 +2,8 @@ package io.moli.android;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
@@ -569,6 +571,7 @@ public final class IntegrationsActivity extends Activity {
                 Button go = s.primary(s.getString(R.string.setup_open_add));
                 go.setOnClickListener(v -> s.openDashboard("#/ajouter"));
                 panel.addView(go, s.matchWrap(0, s.dp(12), 0, 0));
+                if (brand("Meross")) side.addView(merossAccount());
                 guide(side);
                 return;
             }
@@ -628,6 +631,121 @@ public final class IntegrationsActivity extends Activity {
             panel.addView(actions, s.matchWrap(0, s.dp(18), 0, 0));
             guide(side);
             if (previous != null && !secrets.isEmpty()) markHeld();
+        }
+
+        private boolean brand(String name) {
+            JSONArray brands = pkg.optJSONArray("brands");
+            for (int i = 0; brands != null && i < brands.length(); i++)
+                if (name.equalsIgnoreCase(brands.optString(i))) return true;
+            return false;
+        }
+
+        /** The Meross account's key, read once (DECISIONS 7); kept while the form is open. */
+        private String accountKey;
+        private boolean askCode;
+
+        /**
+         * The key of the Meross account, read from the account as meross_lan
+         * does: the same for every plug of the account. Copied, for the
+         * first plug of « Ajouter un appareil »; Moli reuses it for the next
+         * ones. The password is not kept.
+         */
+        private View merossAccount() {
+            IntegrationsActivity s = screen;
+            LinearLayout box = s.card();
+            box.addView(s.text(s.getString(R.string.meross_title), 17, INK, true));
+            box.addView(s.text(s.getString(R.string.meross_explained), 14, MUTED, false), s.matchWrap(0, s.dp(4), 0, 0));
+            if (accountKey != null) { showKey(box); return box; }
+            EditText email = s.field(s.getString(R.string.example_email), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+            EditText password = s.field("", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+            EditText code = s.field("", InputType.TYPE_CLASS_NUMBER);
+            labelled(box, s.getString(R.string.meross_email), null, email);
+            labelled(box, s.getString(R.string.meross_password), s.getString(R.string.meross_password_help), password);
+            LinearLayout codeRow = s.column();
+            codeRow.setVisibility(askCode ? View.VISIBLE : View.GONE);
+            box.addView(codeRow);
+            labelled(codeRow, s.getString(R.string.meross_code), s.getString(R.string.meross_code_help), code);
+            TextView why = s.text("", 14, BAD, false);
+            why.setVisibility(View.GONE);
+            box.addView(why, s.matchWrap(0, s.dp(10), 0, 0));
+            Button get = s.primary(s.getString(R.string.meross_get));
+            box.addView(get, s.matchWrap(0, s.dp(14), 0, 0));
+            get.setOnClickListener(v -> {
+                String mail = email.getText().toString().trim(), secret = password.getText().toString();
+                if (mail.isEmpty() || secret.isEmpty()) { why.setText(R.string.meross_missing); why.setVisibility(View.VISIBLE); return; }
+                get.setEnabled(false);
+                get.setText(R.string.meross_getting);
+                why.setVisibility(View.GONE);
+                String typedCode = codeRow.getVisibility() == View.VISIBLE ? code.getText().toString() : null;
+                s.probe.execute(() -> {
+                    String failure = null;
+                    JSONObject answer = null;
+                    try { answer = Setup.merossKey(s, mail, secret, typedCode); }
+                    catch (Exception e) { failure = s.getString(R.string.meross_unreachable, String.valueOf(e.getMessage())); }
+                    JSONObject got = answer;
+                    String error = failure;
+                    s.handler.post(() -> {
+                        if (s.isDestroyed()) return;
+                        get.setEnabled(true);
+                        get.setText(R.string.meross_get);
+                        String key = got == null ? null : got.optString("key", null);
+                        if (key != null && !key.isEmpty()) {
+                            accountKey = key;
+                            password.setText("");
+                            copy(key);
+                            box.removeAllViews();
+                            box.addView(s.text(s.getString(R.string.meross_title), 17, INK, true));
+                            showKey(box);
+                            return;
+                        }
+                        int status = got == null ? 0 : got.optInt("status");
+                        if (status == 1033 || status == 1032) { askCode = true; codeRow.setVisibility(View.VISIBLE); code.requestFocus(); }
+                        why.setText(error != null ? error : refusal(status, got.optString("info")));
+                        why.setVisibility(View.VISIBLE);
+                    });
+                });
+            });
+            return box;
+        }
+
+        private void showKey(LinearLayout box) {
+            IntegrationsActivity s = screen;
+            box.addView(s.text(s.getString(R.string.meross_got), 14, OK, true), s.matchWrap(0, s.dp(8), 0, 0));
+            TextView key = s.text(accountKey, 16, INK, false);
+            key.setTypeface(Typeface.MONOSPACE);
+            key.setTextIsSelectable(true);
+            key.setPadding(s.dp(12), s.dp(10), s.dp(12), s.dp(10));
+            key.setBackground(s.stroke(PAGE, LINE, 10));
+            box.addView(key, s.matchWrap(0, s.dp(8), 0, 0));
+            box.addView(s.text(s.getString(R.string.meross_next), 14, INK, false), s.matchWrap(0, s.dp(10), 0, 0));
+            LinearLayout actions = s.row();
+            Button again = s.flat(s.getString(R.string.meross_copy));
+            again.setOnClickListener(v -> copy(accountKey));
+            actions.addView(again, new LinearLayout.LayoutParams(0, s.dp(48), 1));
+            Button go = s.primary(s.getString(R.string.setup_open_add));
+            go.setOnClickListener(v -> s.openDashboard("#/ajouter"));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, s.dp(48), 1);
+            lp.setMargins(s.dp(12), 0, 0, 0);
+            actions.addView(go, lp);
+            box.addView(actions, s.matchWrap(0, s.dp(12), 0, 0));
+        }
+
+        private void copy(String key) {
+            screen.getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Meross", key));
+            android.widget.Toast.makeText(screen, R.string.meross_copied, android.widget.Toast.LENGTH_SHORT).show();
+        }
+
+        /** Meross's refusal in words (statuses as meross_lan names them). */
+        private String refusal(int status, String info) {
+            switch (status) {
+                case 1001: case 1002: case 1004: case 1005: case 1006: case 1008: case 1031:
+                    return screen.getString(R.string.meross_wrong);
+                case 1033: return screen.getString(R.string.meross_code_needed);
+                case 1032: return screen.getString(R.string.meross_code_wrong);
+                case 1028: return screen.getString(R.string.meross_too_often);
+                case 1035: return screen.getString(R.string.meross_locked);
+                default: return screen.getString(R.string.meross_refused, status, info);
+            }
         }
 
         private List<String> names(String key) {

@@ -98,4 +98,26 @@
     <string name="key_master">Master key:</string>
     <string name="key_copy">Copy the key</string>
     <string name="key_copied">Key copied.</string>
+    <string name="example_email">you@example.com</string>
+    <string name="meross_title">Meross account key</string>
+    <string name="meross_explained">Plugs set up with the Meross app sign their messages with your account’s key, the same for all of them. Moli reads it once from your account, as Home Assistant (meross_lan) does, then closes the session. The password is not kept.</string>
+    <string name="meross_email">Meross account e-mail</string>
+    <string name="meross_password">Meross password</string>
+    <string name="meross_password_help">Sent only to Meross, over HTTPS and hashed as the Meross app does, then forgotten.</string>
+    <string name="meross_code">Two-factor code</string>
+    <string name="meross_code_help">The six-digit code Meross just asked for.</string>
+    <string name="meross_get">Get the key</string>
+    <string name="meross_getting">Connecting to Meross…</string>
+    <string name="meross_missing">The Meross account’s e-mail and password.</string>
+    <string name="meross_got">Key retrieved and copied.</string>
+    <string name="meross_next">Open “Add a device”, type the first plug’s address, then paste this key when Moli asks for it (long press in the “Device key” field). For the next plugs, the address is enough: Moli reuses the key by itself.</string>
+    <string name="meross_copy">Copy again</string>
+    <string name="meross_copied">Meross key copied.</string>
+    <string name="meross_wrong">Meross refuses this e-mail or password.</string>
+    <string name="meross_code_needed">Meross asks for a two-factor code: type it above.</string>
+    <string name="meross_code_wrong">Meross refuses this two-factor code.</string>
+    <string name="meross_too_often">Too many attempts: Meross asks to wait a little.</string>
+    <string name="meross_locked">Meross has locked sign-in for a while (too many attempts).</string>
+    <string name="meross_refused">Meross refused (code %1$d): %2$s</string>
+    <string name="meross_unreachable">Meross does not answer: %1$s</string>
 </resources>

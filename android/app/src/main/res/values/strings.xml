@@ -99,4 +99,26 @@
     <string name="key_master">Clé maître :</string>
     <string name="key_copy">Copier la clé</string>
     <string name="key_copied">Clé copiée.</string>
+    <string name="example_email">vous@example.com</string>
+    <string name="meross_title">Clé du compte Meross</string>
+    <string name="meross_explained">Vos prises installées par l’appli Meross signent leurs messages avec la clé de votre compte, la même pour toutes. Moli la lit une fois par votre compte, comme Home Assistant (meross_lan), puis ferme la session. Le mot de passe n’est pas gardé.</string>
+    <string name="meross_email">E-mail du compte Meross</string>
+    <string name="meross_password">Mot de passe Meross</string>
+    <string name="meross_password_help">Envoyé seulement à Meross, par HTTPS et haché comme le fait l’appli Meross, puis oublié.</string>
+    <string name="meross_code">Code de double authentification</string>
+    <string name="meross_code_help">Le code à six chiffres que Meross vient de demander.</string>
+    <string name="meross_get">Récupérer la clé</string>
+    <string name="meross_getting">Connexion à Meross…</string>
+    <string name="meross_missing">L’e-mail et le mot de passe du compte Meross.</string>
+    <string name="meross_got">Clé récupérée et copiée.</string>
+    <string name="meross_next">Ouvrez « Ajouter un appareil », tapez l’adresse de la première prise, puis collez cette clé quand Moli la demande (appui long dans le champ « Clé de l’appareil »). Pour les prises suivantes, l’adresse suffit : Moli reprend la clé tout seul.</string>
+    <string name="meross_copy">Copier à nouveau</string>
+    <string name="meross_copied">Clé Meross copiée.</string>
+    <string name="meross_wrong">Meross refuse cet e-mail ou ce mot de passe.</string>
+    <string name="meross_code_needed">Meross demande un code de double authentification : saisissez-le ci-dessus.</string>
+    <string name="meross_code_wrong">Meross refuse ce code de double authentification.</string>
+    <string name="meross_too_often">Trop d’essais : Meross demande d’attendre un peu.</string>
+    <string name="meross_locked">Meross a bloqué la connexion pour un moment (trop d’essais).</string>
+    <string name="meross_refused">Meross a refusé (code %1$d) : %2$s</string>
+    <string name="meross_unreachable">Meross ne répond pas : %1$s</string>
 </resources>
