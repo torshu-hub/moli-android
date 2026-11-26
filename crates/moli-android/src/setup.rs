@@ -650,7 +650,10 @@ mod tests {
         let (_dir, config) = house("vault", "");
         let key = MasterKey::generate().unwrap();
         let names = vec!["key".to_owned(), "token".to_owned()];
-        assert!(stored(&config, &key, "prise", &names).unwrap().is_empty());
+        assert_eq!(
+            stored(&config, &key, "prise", &names).unwrap(),
+            Vec::<String>::new()
+        );
         let values = BTreeMap::from([
             ("key".to_owned(), " abc ".to_owned()),
             ("token".to_owned(), String::new()),
@@ -665,7 +668,10 @@ mod tests {
             Some("abc")
         );
         forget(&config, &key, "prise", &names).unwrap();
-        assert!(stored(&config, &key, "prise", &names).unwrap().is_empty());
+        assert_eq!(
+            stored(&config, &key, "prise", &names).unwrap(),
+            Vec::<String>::new()
+        );
     }
 
     fn health(port: u16) -> Option<String> {
