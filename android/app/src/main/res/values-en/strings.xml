@@ -167,6 +167,7 @@
     <string name="meross_name_hint">Name in Moli</string>
     <string name="network">Network scan</string>
     <string name="network_search">Search</string>
+    <string name="network_searching_button">Searching…</string>
     <string name="network_searching">Looking for the network\'s devices… (about fifteen seconds)</string>
     <string name="network_failed">The search stopped: %1$s</string>
     <plurals name="network_found">

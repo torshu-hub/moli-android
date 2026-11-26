@@ -14,6 +14,7 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TableLayout;
 import android.widget.TableRow;
@@ -41,6 +42,8 @@ public final class NetworkActivity extends Activity {
     private final ExecutorService work = Executors.newSingleThreadExecutor();
     private TextView status;
     private Button search;
+    /** Turns while a search runs. */
+    private ProgressBar spinner;
     private TableLayout table;
 
     private int dp(float v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
@@ -64,6 +67,12 @@ public final class NetworkActivity extends Activity {
         search.setPadding(dp(18), 0, dp(18), 0);
         search.setOnClickListener(v -> run());
         top.addView(search);
+        spinner = new ProgressBar(this);
+        spinner.setIndeterminate(true);
+        spinner.setVisibility(View.GONE);
+        LinearLayout.LayoutParams round = new LinearLayout.LayoutParams(dp(28), dp(28));
+        round.setMargins(dp(14), 0, 0, 0);
+        top.addView(spinner, round);
         status = new TextView(this);
         status.setTextSize(14);
         status.setTextColor(MUTED);
@@ -82,7 +91,7 @@ public final class NetworkActivity extends Activity {
     }
 
     private void run() {
-        search.setEnabled(false);
+        busy(true);
         status.setTextColor(MUTED);
         status.setText(R.string.network_searching);
         work.execute(() -> {
@@ -93,7 +102,7 @@ public final class NetworkActivity extends Activity {
             String why = failure;
             handler.post(() -> {
                 if (isDestroyed()) return;
-                search.setEnabled(true);
+                busy(false);
                 if (result == null) {
                     status.setTextColor(BAD);
                     status.setText(getString(R.string.network_failed, why == null ? "?" : why));
@@ -104,6 +113,15 @@ public final class NetworkActivity extends Activity {
                 show();
             });
         });
+    }
+
+    /** While searching: the button says so and is off, the wheel turns, the last result is greyed. */
+    private void busy(boolean on) {
+        search.setEnabled(!on);
+        search.setAlpha(on ? 0.6f : 1f);
+        search.setText(on ? R.string.network_searching_button : R.string.network_search);
+        spinner.setVisibility(on ? View.VISIBLE : View.GONE);
+        table.setAlpha(on ? 0.35f : 1f);
     }
 
     private void show() {
