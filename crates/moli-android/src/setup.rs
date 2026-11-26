@@ -359,18 +359,22 @@ pub fn settle(config: &Path) {
     let _ = std::fs::remove_file(previous(config));
 }
 
-/// The vault, beside the house's data (`[server] data_dir`).
-fn vault(config: &Path) -> anyhow::Result<PathBuf> {
+/// The house's data folder (`[server] data_dir`).
+pub(crate) fn data_dir(config: &Path) -> anyhow::Result<PathBuf> {
     let doc = read(config)?;
-    let data = doc
+    Ok(doc
         .get("server")
         .and_then(|s| s.get("data_dir"))
         .and_then(Item::as_str)
         .map_or_else(
             || config.parent().unwrap_or(Path::new(".")).to_path_buf(),
             PathBuf::from,
-        );
-    Ok(data.join("secrets.enc"))
+        ))
+}
+
+/// The vault, beside the house's data.
+fn vault(config: &Path) -> anyhow::Result<PathBuf> {
+    Ok(data_dir(config)?.join("secrets.enc"))
 }
 
 fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {

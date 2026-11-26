@@ -10,7 +10,14 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -39,6 +46,9 @@ public final class ManagementActivity extends Activity {
             else if (running || MoliService.starting) state.setText(R.string.state_starting);
             else if (failure != null) state.setText(getString(R.string.state_failed, failure));
             else state.setText(R.string.state_stopped);
+            int tint = MoliService.stopping || running && !healthy || MoliService.starting ? WARN
+                    : running ? OK : failure != null ? BAD : MUTED;
+            dot.setBackground(shape(tint, 0, 7));
             boolean on = running || MoliService.starting;
             power.setText(on ? R.string.stop : R.string.start);
             power.setEnabled(!MoliService.stopping);
@@ -59,27 +69,146 @@ public final class ManagementActivity extends Activity {
         }
     }
 
+    private static final int INK = 0xFF1B2733, MUTED = 0xFF5C6B7A, PAGE = 0xFFF2F4F7, CARD = 0xFFFFFFFF,
+            ACCENT = 0xFF234E70, LINE = 0xFFDDE3EA, OK = 0xFF2E7D4F, WARN = 0xFFB26A00, BAD = 0xFFB3261E;
+    private View dot;
+
+    private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
+
+    private GradientDrawable shape(int fill, int line, int radius) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(fill);
+        g.setCornerRadius(dp(radius));
+        if (line != 0) g.setStroke(dp(2), line);
+        return g;
+    }
+
+    private TextView text(String value, int size, int color, boolean bold) {
+        TextView t = new TextView(this);
+        t.setText(value);
+        t.setTextSize(size);
+        t.setTextColor(color);
+        if (bold) t.setTypeface(null, android.graphics.Typeface.BOLD);
+        return t;
+    }
+
+    private LinearLayout card() {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setPadding(dp(16), dp(14), dp(16), dp(14));
+        c.setBackground(shape(CARD, 0, 16));
+        return c;
+    }
+
+    private LinearLayout.LayoutParams gap(int top) {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        p.setMargins(0, dp(top), 0, 0);
+        return p;
+    }
+
+    /** A card that opens something: its title and one line saying what it is. */
+    private LinearLayout tile(int title, int help, Runnable action) {
+        LinearLayout c = card();
+        c.addView(text(getString(title), 17, INK, true));
+        c.addView(text(getString(help), 13, MUTED, false), gap(2));
+        c.setOnClickListener(v -> action.run());
+        return c;
+    }
+
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved);
-        int gap = (int) (16 * getResources().getDisplayMetrics().density);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(gap, gap, gap, gap);
-        state = new TextView(this);
-        state.setTextSize(20);
-        state.setPadding(0, 0, 0, gap);
-        root.addView(state);
-        power = button(root, R.string.start, this::togglePower);
-        open = button(root, R.string.open_dashboard, () ->
-                startActivity(new Intent(this, DashboardActivity.class)));
-        button(root, R.string.integrations, () ->
-                startActivity(new Intent(this, IntegrationsActivity.class)));
-        button(root, R.string.network, () ->
-                startActivity(new Intent(this, NetworkActivity.class)));
-        button(root, R.string.backup, this::chooseBackup);
-        button(root, R.string.restore, this::chooseRestore);
-        button(root, R.string.key_title, this::showKey);
-        setContentView(root);
+        root.setPadding(dp(16), dp(16), dp(16), dp(24));
+
+        LinearLayout head = card();
+        LinearLayout line = new LinearLayout(this);
+        line.setGravity(Gravity.CENTER_VERTICAL);
+        dot = new View(this);
+        line.addView(dot, new LinearLayout.LayoutParams(dp(14), dp(14)));
+        LinearLayout titles = new LinearLayout(this);
+        titles.setOrientation(LinearLayout.VERTICAL);
+        titles.setPadding(dp(12), 0, dp(12), 0);
+        titles.addView(text(getString(R.string.app_name), 24, INK, true));
+        state = text("", 14, MUTED, false);
+        titles.addView(state);
+        line.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        power = new Button(this);
+        power.setAllCaps(false);
+        power.setTextColor(ACCENT);
+        power.setBackground(shape(PAGE, ACCENT, 10));
+        power.setOnClickListener(v -> togglePower());
+        line.addView(power);
+        head.addView(line);
+        root.addView(head);
+
+        open = new Button(this);
+        open.setText(R.string.open_dashboard);
+        open.setAllCaps(false);
+        open.setTextSize(20);
+        open.setTextColor(Color.WHITE);
+        open.setBackground(shape(ACCENT, 0, 16));
+        open.setOnClickListener(v -> startActivity(new Intent(this, DashboardActivity.class)));
+        LinearLayout.LayoutParams big = gap(12);
+        big.height = dp(72);
+        root.addView(open, big);
+
+        LinearLayout tiles = new LinearLayout(this);
+        LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1);
+        tiles.addView(tile(R.string.integrations, R.string.integrations_help, () ->
+                startActivity(new Intent(this, IntegrationsActivity.class))), half);
+        LinearLayout.LayoutParams other = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1);
+        other.setMargins(dp(12), 0, 0, 0);
+        tiles.addView(tile(R.string.network, R.string.network_help, () ->
+                startActivity(new Intent(this, NetworkActivity.class))), other);
+        root.addView(tiles, gap(12));
+
+        LinearLayout house = card();
+        house.addView(text(getString(R.string.house_title), 15, MUTED, true));
+        house.addView(link(R.string.backup, this::chooseBackup), gap(6));
+        house.addView(link(R.string.restore, this::chooseRestore), gap(0));
+        house.addView(link(R.string.key_title, this::showKey), gap(0));
+        root.addView(house, gap(12));
+
+        LinearLayout launch = card();
+        Switch direct = new Switch(this);
+        direct.setText(R.string.direct_launch);
+        direct.setTextSize(16);
+        direct.setTextColor(INK);
+        direct.setChecked(directLaunch(this));
+        direct.setOnCheckedChangeListener((b, on) ->
+                getSharedPreferences("moli", MODE_PRIVATE).edit().putBoolean(DIRECT, on).apply());
+        launch.addView(direct);
+        launch.addView(text(getString(R.string.direct_launch_help), 13, MUTED, false), gap(4));
+        root.addView(launch, gap(12));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(PAGE);
+        scroll.setFillViewport(true);
+        scroll.addView(root);
+        setContentView(scroll);
+
+        // « Ouvrir Moli au lancement »: a fresh launch goes straight to the
+        // dashboard; Back from its first page lands here, on this screen.
+        if (saved == null && directLaunch(this) && ProtectedKey.exists(this))
+            startActivity(new Intent(this, DashboardActivity.class));
+    }
+
+    static final String DIRECT = "direct_launch";
+
+    static boolean directLaunch(android.content.Context context) {
+        return context.getSharedPreferences("moli", MODE_PRIVATE).getBoolean(DIRECT, false);
+    }
+
+    private Button link(int label, Runnable action) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        b.setTextColor(ACCENT);
+        b.setBackgroundColor(0);
+        b.setOnClickListener(v -> action.run());
+        return b;
     }
 
     private static final int SAVE = 1, RESTORE = 2;

@@ -242,6 +242,10 @@ fn call(action: &str, config: &Path, key: String, body: &str) -> anyhow::Result<
         "meross_add" => plugs::add(&serde_json::from_str(body)?)?.to_string(),
         "meross_house" => plugs::house(&serde_json::from_str(body)?)?.to_string(),
         "meross_rename" => plugs::rename(&serde_json::from_str(body)?)?.to_string(),
+        "plug_remove" => {
+            plugs::remove_added(config, body)?;
+            String::new()
+        }
         "network_scan" => network::scan(&serde_json::from_str(body)?)?.to_string(),
         other => anyhow::bail!("unknown action {other:?}"),
     })

@@ -182,4 +182,15 @@
     <string name="network_role_tablet">This tablet</string>
     <string name="network_role_box">Router</string>
     <string name="network_copied">%1$s copied.</string>
+    <string name="meross_col_remove">Remove</string>
+    <string name="meross_removing">Removing the plug, Moli restarts…</string>
+    <string name="meross_removed">Plug removed from the house. Its history and name stay in Moli.</string>
+    <string name="meross_removed_short">Removed</string>
+    <string name="meross_remove_elsewhere">This plug was not added through « Add a device »: it is written in moli.toml.</string>
+    <string name="meross_remove_failed">Could not remove it: %1$s</string>
+    <string name="integrations_help">Add, set up, remove</string>
+    <string name="network_help">The devices on the network</string>
+    <string name="house_title">The house</string>
+    <string name="direct_launch">Open Moli at launch</string>
+    <string name="direct_launch_help">The app opens straight on Moli. Back from its first page returns here.</string>
 </resources>
