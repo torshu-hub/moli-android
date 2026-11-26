@@ -37,9 +37,9 @@ use model::{Home, HomeStatus, Module, Room, RoomStatus, Schedule, Sensor};
 const USER_AGENT: &str = "MoliOS/0.1";
 const HTTP_LIMIT: Duration = Duration::from_secs(15);
 const MAX_BODY: usize = 4 * 1024 * 1024;
-/// Rooms and modules: a minute, as often as Netatmo's quota allows without
-/// waste (the radiators change slowly).
-const POLL_STATUS: Duration = Duration::from_secs(60);
+/// Rooms and modules: every 30 seconds (about 120 calls an hour for a home,
+/// against the 500 an hour Netatmo gives an account).
+const POLL_STATUS: Duration = Duration::from_secs(30);
 /// The homes' layout (rooms, modules, schedules).
 const POLL_HOMES: Duration = Duration::from_secs(30 * 60);
 /// The stations measure every ten minutes.

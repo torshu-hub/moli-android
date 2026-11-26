@@ -1944,7 +1944,7 @@ Au démarrage, `[sun]` est vérifié : au moins une façade, des `id` simples et
   (stations et modules extérieur, vent, pluie, intérieur, Healthy Home Coach). Pas les caméras :
   c'est la PR officielle #331, dont le pilote partage les noms de secrets.
 - **Protocole** : le cloud Netatmo (`api.netatmo.com`, HTTPS seulement), sondé : pas de webhook,
-  Moli n'a pas d'adresse publique. Pièces toutes les minutes, stations toutes les 10 minutes,
+  Moli n'a pas d'adresse publique. Pièces toutes les 30 secondes (environ 120 appels par heure et par maison, pour 500 par heure et par compte, d'après l'ancien fork), stations toutes les 10 minutes,
   composition des maisons toutes les 30 minutes. Après un refus pour trop d'appels (429 ou
   erreur 26), le pilote se tait 5 minutes.
 - **Configuration** : `home_id` (seulement pour ne lire qu'une maison).
