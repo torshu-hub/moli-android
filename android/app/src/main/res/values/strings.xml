@@ -10,6 +10,7 @@
     <string name="stop">Arrêter</string>
     <string name="open_dashboard">Ouvrir Moli</string>
     <string name="integrations">Intégrations</string>
+    <string name="integrations_empty">Aucune intégration à configurer pour l\'instant.</string>
     <string name="pin_title">Code de la maison</string>
     <string name="pin_message">6 à 8 chiffres. Le tableau de bord le demande pour valider ce qui engage la maison.</string>
     <string name="pin_invalid">6 à 8 chiffres</string>

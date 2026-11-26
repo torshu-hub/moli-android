@@ -24,6 +24,8 @@ Une intégration propre, c'est une fonctionnalité complète et native de Moli O
 
 ## Travailler
 - Avant de coder : cinq lignes (ce que tu construis, ce que tu ne construis pas, quel mécanisme natif tu réutilises). Les publier dans la PR, puis poursuivre sans attendre ma réponse ; si je corrige, on ajuste.
+- Dans ces cinq lignes, une ligne obligatoire : « Écart à DECISIONS, à Moli officiel ou travail non demandé : aucun / lequel ». S'il y en a un, il attend mon accord avant d'être codé ; le reste avance.
+- Une conversation par mission : on repart d'ETAT.md, pas d'une conversation longue.
 - Ne jamais rester bloqué sur une question : je ne suis pas toujours là. Écrire la question dans le rapport, choisir la lecture la plus raisonnable, dire laquelle en tête du travail, et continuer. Seuls s'arrêtent les actes de la liste « À me demander » et les choix irréversibles : les préparer, les mettre de côté, et poursuivre les tâches indépendantes.
 - Anticiper mes validations. Dès les cinq lignes, lister d'un coup tout ce dont tu auras besoin de ma part pour aller au bout (accès, secrets, comptes de test, essais sur la tablette, accords de la liste « À me demander »), pour que je les donne en une fois. Ne redemander plus tard que ce qui n'était pas prévisible.
 - Lots courts, sur une branche, avec une PR ; s'arrêter au premier résultat visible. Tu fusionnes toi-même, je n'ai rien à faire sur GitHub. Contrôles : scripts/check.sh et la CI.
