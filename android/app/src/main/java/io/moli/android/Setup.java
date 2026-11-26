@@ -41,8 +41,30 @@ final class Setup {
 
     /** Where the account's plugs answer on the home network: `{uuid: address}` (plugs.rs). */
     static JSONObject merossFind(Context context, String key, JSONArray uuids) throws Exception {
-        String body = new JSONObject().put("key", key).put("uuids", uuids).toString();
-        return new JSONObject(call("meross_find", config(context).getPath(), "", body));
+        JSONObject body = new JSONObject().put("key", key).put("uuids", uuids);
+        String own = homeAddress(context);
+        if (own != null) body.put("own", own);
+        return new JSONObject(call("meross_find", config(context).getPath(), "", body.toString()));
+    }
+
+    /**
+     * The tablet's IPv4 on the home network (Wi-Fi or Ethernet), never a
+     * VPN's: with a VPN on, the default route is the VPN's, not the home's.
+     * Null if none (plugs.rs then takes the default route's).
+     */
+    static String homeAddress(Context context) {
+        android.net.ConnectivityManager cm = context.getSystemService(android.net.ConnectivityManager.class);
+        if (cm == null) return null;
+        for (android.net.Network n : cm.getAllNetworks()) {
+            android.net.NetworkCapabilities caps = cm.getNetworkCapabilities(n);
+            android.net.LinkProperties link = cm.getLinkProperties(n);
+            if (caps == null || link == null || caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) continue;
+            if (!caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                    && !caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)) continue;
+            for (android.net.LinkAddress a : link.getLinkAddresses())
+                if (a.getAddress() instanceof java.net.Inet4Address) return a.getAddress().getHostAddress();
+        }
+        return null;
     }
 
     /**

@@ -39,11 +39,15 @@ const ASK_AT_ONCE: usize = 4;
 /// Moli), one probe asks a few messages (45 s at most in Moli).
 const MOLI_WAIT: Duration = Duration::from_secs(60);
 
-/// « Find these plugs »: the account's key and the uuids it lists.
+/// « Find these plugs »: the account's key, the uuids it lists, and the
+/// tablet's address on the home network (the app reads it from the Wi-Fi:
+/// with a VPN on, the default route is not the home's).
 #[derive(Deserialize)]
 pub struct Find {
     pub key: String,
     pub uuids: Vec<String>,
+    #[serde(default)]
+    pub own: Option<Ipv4Addr>,
 }
 
 impl std::fmt::Debug for Find {
@@ -56,7 +60,7 @@ impl std::fmt::Debug for Find {
 
 /// Where each plug answers: `{uuid: address}`, only those found.
 pub fn find(request: &Find) -> anyhow::Result<Json> {
-    let network = home_network()?;
+    let network = home_network(request.own)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -64,15 +68,20 @@ pub fn find(request: &Find) -> anyhow::Result<Json> {
     Ok(json!(found))
 }
 
-/// The other host addresses of the tablet's /24, on a private network.
-fn home_network() -> anyhow::Result<Vec<Ipv4Addr>> {
-    // No packet leaves: a UDP « connection » only picks the outgoing address.
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
-    socket.connect((Ipv4Addr::new(192, 0, 2, 1), 9))?;
-    let SocketAddr::V4(own) = socket.local_addr()? else {
-        bail!("no IPv4 address");
+/// The other host addresses of the tablet's /24, on a private network:
+/// around `own`, else the default route's address.
+fn home_network(own: Option<Ipv4Addr>) -> anyhow::Result<Vec<Ipv4Addr>> {
+    let own = if let Some(own) = own {
+        own
+    } else {
+        // No packet leaves: a UDP « connection » only picks the outgoing address.
+        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+        socket.connect((Ipv4Addr::new(192, 0, 2, 1), 9))?;
+        let SocketAddr::V4(own) = socket.local_addr()? else {
+            bail!("no IPv4 address");
+        };
+        *own.ip()
     };
-    let own = *own.ip();
     if !own.is_private() {
         bail!("not on a home network");
     }
@@ -283,6 +292,12 @@ async fn add_to(request: &Add) -> anyhow::Result<Json> {
     Ok(Json::Object(outcomes))
 }
 
+/// Moli refuses a request without a `Host` it knows (its guard against DNS
+/// rebinding): this very machine's.
+fn host(port: u16) -> String {
+    format!("127.0.0.1:{port}")
+}
+
 /// The house's own API, as the dashboard calls it: a human session.
 struct Moli {
     port: u16,
@@ -294,7 +309,8 @@ impl Moli {
         let request = moli_net::json_body(
             http::Request::builder()
                 .method(Method::POST)
-                .uri("/api/session"),
+                .uri("/api/session")
+                .header(http::header::HOST, host(port)),
             &json!({ "pin": pin }),
         )?;
         let (status, headers, _) = moli_net::plain_with_headers("127.0.0.1", port, request).await?;
@@ -321,6 +337,7 @@ impl Moli {
         let builder = http::Request::builder()
             .method(method)
             .uri(path)
+            .header(http::header::HOST, host(self.port))
             .header(http::header::COOKIE, &self.cookie)
             .header("x-moli-origin", "ui");
         let request = if body.is_null() {
@@ -490,6 +507,11 @@ mod tests {
     fn record(seen: &Seen, path: &str, headers: &HeaderMap, body: &str) -> Json {
         let body: Json = serde_json::from_str(body).unwrap_or(Json::Null);
         let header = |name: &str| headers.get(name).map(|v| v.to_str().unwrap().to_owned());
+        // Moli's guard refuses a request without a host it knows.
+        assert!(
+            header("host").is_some_and(|h| h.starts_with("127.0.0.1:")),
+            "{path}: no host"
+        );
         seen.lock().unwrap().push((
             path.to_owned(),
             body.clone(),
