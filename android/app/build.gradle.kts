@@ -7,9 +7,11 @@ android {
         applicationId = "io.moli.android"
         minSdk = 28
         targetSdk = 35
-        // The CI gives its run number: each APK installs over the previous one.
-        versionCode = (findProperty("moliVersionCode") as String? ?: "1").toInt()
-        versionName = "0.1.0"
+        // The CI gives its run number: each APK installs over the previous one,
+        // and says which it is (Settings, Apps, Moli: « version 56 »).
+        val build = findProperty("moliVersionCode") as String? ?: "1"
+        versionCode = build.toInt()
+        versionName = build
         // The engine (scripts/build-android.sh): ARM64 only, the tablet's.
         ndk { abiFilters += "arm64-v8a" }
     }
