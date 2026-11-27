@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The app's colours (Look.java): its blue on bars, switches, boxes and dialogs' buttons. -->
+    <style name="Moli" parent="@android:style/Theme.Material.Light.DarkActionBar">
+        <item name="android:colorPrimary">#FF234E70</item>
+        <item name="android:colorPrimaryDark">#FF1A3B55</item>
+        <item name="android:colorAccent">#FF234E70</item>
+        <item name="android:windowBackground">@color/page</item>
+    </style>
+    <!-- The home screen draws its own header. -->
+    <style name="Moli.Home">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+    <color name="page">#FFF2F4F7</color>
+</resources>

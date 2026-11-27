@@ -171,7 +171,7 @@ public final class IntegrationsActivity extends Activity {
     }
 
     /** Moli's drivers and their state, from the public health route (null: Moli is not answering). */
-    private static Map<String, JSONObject> health(int port) {
+    static Map<String, JSONObject> health(int port) {
         try {
             HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:" + port + "/api/health").openConnection();
             c.setConnectTimeout(1500);
@@ -221,7 +221,7 @@ public final class IntegrationsActivity extends Activity {
         board.setOnClickListener(v -> openDashboard("#/systeme"));
         house.addView(board, matchWrap(0, dp(4), 0, 0));
         Button journal = flat(getString(R.string.journal_button));
-        journal.setOnClickListener(v -> showJournal());
+        journal.setOnClickListener(v -> Journal.show(this));
         house.addView(journal, matchWrap(0, dp(4), 0, 0));
         house.addView(note(getString(R.string.setup_added_elsewhere)));
     }
@@ -370,39 +370,6 @@ public final class IntegrationsActivity extends Activity {
     }
 
     interface Change { String run() throws Exception; }
-
-    /** What Moli and the app have said lately, to read, copy or send (DECISIONS 8). */
-    private void showJournal() {
-        work.execute(() -> {
-            String text;
-            try { text = Setup.journal(this); } catch (Exception unreadable) { text = String.valueOf(unreadable.getMessage()); }
-            String shown = text;
-            handler.post(() -> {
-                if (isDestroyed()) return;
-                TextView view = text(shown.isEmpty() ? getString(R.string.journal_empty) : shown, 11, INK, false);
-                view.setTypeface(Typeface.MONOSPACE);
-                view.setTextIsSelectable(true);
-                view.setPadding(dp(16), dp(8), dp(16), dp(8));
-                android.widget.ScrollView scroll = new android.widget.ScrollView(this);
-                scroll.addView(view);
-                AlertDialog dialog = new AlertDialog.Builder(this)
-                        .setTitle(R.string.journal_title)
-                        .setView(scroll)
-                        .setPositiveButton(R.string.journal_copy, (d, w) -> {
-                            getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Moli", shown));
-                            android.widget.Toast.makeText(this, R.string.journal_copied, android.widget.Toast.LENGTH_SHORT).show();
-                        })
-                        .setNeutralButton(R.string.journal_share, (d, w) -> {
-                            Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, shown);
-                            startActivity(Intent.createChooser(send, getString(R.string.journal_title)));
-                        })
-                        .setNegativeButton(android.R.string.ok, null)
-                        .show();
-                // Latest lines first in view: the end.
-                scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
-            });
-        });
-    }
 
     private void fail(String message) {
         banner.setText(getString(R.string.setup_failed, String.valueOf(message)));

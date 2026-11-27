@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Moli</string>
-    <string name="state_stopped">Arrêté</string>
-    <string name="state_starting">Démarrage…</string>
-    <string name="state_stopping">Arrêt…</string>
-    <string name="state_running">En marche, port %1$d</string>
-    <string name="state_failed">Erreur : %1$s</string>
+    <string name="state_stopped">Moli est arrêté</string>
+    <string name="state_starting">Moli démarre…</string>
+    <string name="state_stopping">Moli s’arrête…</string>
+    <string name="state_running">Moli fonctionne</string>
+    <string name="state_failed">Moli s’est arrêté : %1$s</string>
     <string name="start">Démarrer</string>
     <string name="stop">Arrêter</string>
     <string name="open_dashboard">Ouvrir Moli</string>
@@ -188,8 +188,7 @@
     <string name="meross_remove_elsewhere">Cette prise n’a pas été ajoutée par « Ajouter un appareil » (elle est écrite dans moli.toml), ou n’existe plus.</string>
     <string name="meross_remove_failed">Retrait impossible : %1$s</string>
     <string name="integrations_help">Ajouter, régler, retirer</string>
-    <string name="network_help">Les appareils du réseau</string>
-    <string name="house_title">La maison</string>
+    <string name="network_help">Ce qui répond sur le réseau, avec son adresse</string>
     <string name="direct_launch">Ouvrir Moli au lancement</string>
     <string name="direct_launch_help">L’appli s’ouvre directement sur Moli. Retour depuis sa première page ramène ici.</string>
     <string name="meross_ghost">« %1$s » : ancien appareil qui ne répond plus.</string>
@@ -216,7 +215,6 @@
     <string name="journal_copy">Copier</string>
     <string name="journal_share">Partager</string>
     <string name="journal_copied">Journal copié</string>
-    <string name="house_settings">Réglages de la maison</string>
     <string name="energy">Énergie</string>
     <string name="energy_reading">Lecture des réglages de la maison…</string>
     <string name="energy_unsaved">Modifications non enregistrées</string>
@@ -313,4 +311,32 @@
     <string name="energy_preview_price">Prix unique : %1$s €/kWh, gardé par Moli comme la carte « Prix du kWh » (hors de moli.toml).</string>
     <string name="energy_required">À remplir</string>
     <string name="energy_number_invalid">Un nombre (0.2016)</string>
+    <string name="home_address">Depuis un autre écran de la maison : %1$s</string>
+    <string name="home_address_copied">%1$s copiée</string>
+    <string name="group_devices">Appareils</string>
+    <string name="group_house">La maison</string>
+    <string name="group_tablet">Cette tablette</string>
+    <string name="integrations_none">Aucune pour l’instant : en ajouter une</string>
+    <plurals name="integrations_count">
+        <item quantity="one">%d intégration</item>
+        <item quantity="other">%d intégrations</item>
+    </plurals>
+    <string name="integrations_all_fine">toutes répondent</string>
+    <plurals name="integrations_silent">
+        <item quantity="one">%d ne répond pas</item>
+        <item quantity="other">%d ne répondent pas</item>
+    </plurals>
+    <string name="not_set_yet">Pas encore réglé</string>
+    <string name="energy_summary_peak">Heures pleines / creuses</string>
+    <string name="energy_summary_some">Réglée</string>
+    <plurals name="energy_summary_followed">
+        <item quantity="one">%d appareil suivi</item>
+        <item quantity="other">%d appareils suivis</item>
+    </plurals>
+    <string name="backup_help">Toute la maison dans un fichier .zip</string>
+    <string name="backup_last">Dernière : %1$s</string>
+    <string name="restore_help">Depuis une sauvegarde .zip</string>
+    <string name="key_help">À garder à part, avec la sauvegarde</string>
+    <string name="key_none">Pas encore de maison : démarrez Moli pour choisir son code.</string>
+    <string name="journal_help">Ce que Moli vient de faire, à copier ou partager</string>
 </resources>
