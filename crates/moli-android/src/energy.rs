@@ -77,11 +77,29 @@ fn hours_block(doc: &DocumentMut) -> Option<(String, Vec<String>)> {
 /// comments stay as they are. Hours given and no period point named: the
 /// tariff follows them.
 pub fn put(config: &Path, body: &str) -> anyhow::Result<()> {
+    let doc = changed(&setup::read(config)?, body)?;
+    setup::write(config, &doc)
+}
+
+/// « Voir ce qui sera écrit »: the house's `[energy]` and its block of
+/// off-peak hours, now and once `body` is written, read only; `error`: why
+/// Moli's check would refuse it (nothing is written either way).
+pub fn preview(config: &Path, body: &str) -> anyhow::Result<Json> {
+    let doc = setup::read(config)?;
+    let (after, error) = match changed(&doc, body) {
+        Ok(after) => (excerpt(&after), Json::Null),
+        Err(e) => (String::new(), json!(format!("{e:#}"))),
+    };
+    Ok(json!({ "before": excerpt(&doc), "after": after, "error": error }))
+}
+
+/// The house's file with `body` applied, held to the official checks.
+fn changed(doc: &DocumentMut, body: &str) -> anyhow::Result<DocumentMut> {
     let Put {
         mut section,
         offpeak,
     } = serde_json::from_str(body).context("invalid [energy]")?;
-    let mut doc = setup::read(config)?;
+    let mut doc = doc.clone();
     if let Some(hours) = offpeak {
         put_hours(&mut doc, &mut section, hours)?;
     }
@@ -101,7 +119,34 @@ pub fn put(config: &Path, body: &str) -> anyhow::Result<()> {
         }
         doc.insert("energy", Item::Table(table));
     }
-    setup::write(config, &doc)
+    Ok(doc)
+}
+
+/// What this screen writes in the file: its block of off-peak hours, then `[energy]`.
+fn excerpt(doc: &DocumentMut) -> String {
+    let mut out = String::new();
+    if let Some((id, _)) = hours_block(doc)
+        && let Some(block) = setup::blocks(doc)
+            .into_iter()
+            .flat_map(ArrayOfTables::iter)
+            .find(|b| b.get("id").and_then(Item::as_str) == Some(id.as_str()))
+    {
+        let mut part = DocumentMut::new();
+        let mut list = ArrayOfTables::new();
+        let mut block = block.clone();
+        block.decor_mut().clear();
+        list.push(block);
+        part.insert("driver", Item::ArrayOfTables(list));
+        out.push_str(part.to_string().trim());
+        out.push_str("\n\n");
+    }
+    if let Some(energy) = doc.get("energy") {
+        let mut part = DocumentMut::new();
+        part.insert("energy", energy.clone());
+        out.push_str(part.to_string().trim());
+        out.push('\n');
+    }
+    out
 }
 
 /// The block of off-peak hours, as the integrations screen writes it.
@@ -259,22 +304,70 @@ impl std::fmt::Debug for Session {
     }
 }
 
-/// The house's points to choose from, and the plugs that measure a power no
-/// meter follows yet (see [`points_of`]).
+/// The house's points to choose from, what measures (see [`points_of`]), and
+/// the house's price of a kWh (`house_price`, null without one).
 pub fn points(config: &Path, request: &Session) -> anyhow::Result<Json> {
     let section: Json = serde_json::from_str(&read(config)?)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let snapshot = runtime.block_on(async {
+    let (snapshot, summary) = runtime.block_on(async {
         let moli = Moli::open(request.port, &request.pin).await?;
         let devices = moli.call(Method::GET, "/api/devices", &Json::Null).await;
+        // No meter yet: 404, no price either.
+        let summary = moli.call(Method::GET, "/api/energy", &Json::Null).await;
         moli.close().await;
         let (status, snapshot) = devices?;
         anyhow::ensure!(status == 200, "Moli: HTTP {status}");
-        Ok(snapshot)
+        Ok((
+            snapshot,
+            summary.ok().filter(|(s, _)| *s == 200).map(|(_, j)| j),
+        ))
     })?;
-    Ok(points_of(&snapshot, &section))
+    let mut out = points_of(&snapshot, &section["section"]);
+    out["house_price"] = summary.map_or(Json::Null, |s| s["house_price"].clone());
+    Ok(out)
+}
+
+/// « Prix unique »: the house's price of a kWh, as the dashboard's card sets
+/// it (`PUT /api/energy/price`, journaled, from now on). `Ok("")` when done;
+/// else Moli's refusal.
+#[derive(Deserialize)]
+pub struct Price {
+    pub port: u16,
+    pub pin: String,
+    pub price: f64,
+}
+
+impl std::fmt::Debug for Price {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Price")
+            .field("price", &self.price)
+            .finish_non_exhaustive()
+    }
+}
+
+pub fn price(request: &Price) -> anyhow::Result<String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let moli = Moli::open(request.port, &request.pin).await?;
+        let answer = moli
+            .call(
+                Method::PUT,
+                "/api/energy/price",
+                &json!({ "price": request.price }),
+            )
+            .await;
+        moli.close().await;
+        Ok(match answer? {
+            (200, _) => String::new(),
+            (status, body) => body["error"]
+                .as_str()
+                .map_or_else(|| format!("HTTP {status}"), str::to_owned),
+        })
+    })
 }
 
 /// What a point can be used for in `[energy]`.
@@ -292,30 +385,44 @@ fn family(point: &Json) -> &'static str {
     }
 }
 
-/// `{"points": [{id, device, name, label, unit, family, value}], "suggested":
-/// [{device, name, point}]}`: every point of the house but Moli's own
-/// summaries (« Énergie », the driven loads); suggested, each device with a
-/// power in W that no meter nor load names any point of (a plug to follow).
+/// What a device that measures most likely is, from what it says of itself.
+fn guess(id: &str, device: &Json) -> &'static str {
+    let said = format!(
+        "{id} {} {}",
+        device["model"].as_str().unwrap_or_default(),
+        device["native_name"].as_str().unwrap_or_default()
+    )
+    .to_lowercase();
+    if said.contains("linky") || said.contains("enedis") {
+        "grid"
+    } else if said.contains("solar") || said.contains("onduleur") || said.contains("inverter") {
+        "solar"
+    } else if said.contains("3em") || said.contains("em06") || said.contains("pince") {
+        "total"
+    } else {
+        "appliance"
+    }
+}
+
+/// `{"points": [{id, device, name, label, unit, family, value}], "measuring":
+/// [{device, name, room, point, family, value, unit, guess, followed}]}`:
+/// every point of the house but Moli's own summaries (« Énergie », the
+/// driven loads); measuring, each device with a power (W, kW) or an energy
+/// counter (Wh, kWh, m³), its power first (Moli adds it up), what it most
+/// likely is, and whether a meter or a load already names it.
 fn points_of(snapshot: &Json, section: &Json) -> Json {
     let mut named = Vec::new();
     for meter in section["meter"].as_array().into_iter().flatten() {
         for key in ["point", "power"] {
             named.extend(meter[key].as_str());
         }
-        named.extend(
-            meter["feeds"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Json::as_str),
-        );
     }
     for load in section["load"].as_array().into_iter().flatten() {
         named.extend(["switch", "grid"].iter().filter_map(|k| load[k].as_str()));
     }
     let own = [moli_energy::points::INSTANCE, moli_energy::load::INSTANCE];
     let mut points = Vec::new();
-    let mut suggested = Vec::new();
+    let mut measuring = Vec::new();
     for device in snapshot["devices"].as_array().into_iter().flatten() {
         let Some(id) = device["id"].as_str() else {
             continue;
@@ -327,10 +434,9 @@ fn points_of(snapshot: &Json, section: &Json) -> Json {
             .as_str()
             .or_else(|| device["native_name"].as_str())
             .unwrap_or(id);
-        let followed = named
-            .iter()
-            .any(|n| *n == id || n.split('/').next() == Some(id));
-        let mut power = None;
+        let followed = named.iter().any(|n| n.split('/').next() == Some(id));
+        // (rank, point): a power in W first, the key `power` before the others.
+        let mut best: Option<(u8, Json)> = None;
         for point in device["points"].as_array().into_iter().flatten() {
             let Some(key) = point["key"].as_str() else {
                 continue;
@@ -341,8 +447,30 @@ fn points_of(snapshot: &Json, section: &Json) -> Json {
                 .or_else(|| point["label"].as_str())
                 .unwrap_or(key);
             let full = format!("{id}/{key}");
-            if family == "power" && point["unit"] == "W" && (power.is_none() || key == "power") {
-                power = Some(full.clone());
+            let value = device["state"][key]["value"].clone();
+            let rank = match (family, point["unit"].as_str().unwrap_or_default()) {
+                ("power", "W") if key == "power" => Some(0),
+                ("power", "W" | "kW") => Some(1),
+                ("energy", _) => Some(2),
+                _ => None,
+            };
+            if let Some(rank) = rank
+                && best.as_ref().is_none_or(|(r, _)| rank < *r)
+            {
+                best = Some((
+                    rank,
+                    json!({
+                        "device": id,
+                        "name": name,
+                        "room": device["label"]["room"].as_str().or_else(|| device["native_room"].as_str()),
+                        "point": full,
+                        "family": family,
+                        "value": value,
+                        "unit": point["unit"],
+                        "guess": guess(id, device),
+                        "followed": followed,
+                    }),
+                ));
             }
             points.push(json!({
                 "id": full,
@@ -351,14 +479,12 @@ fn points_of(snapshot: &Json, section: &Json) -> Json {
                 "label": label,
                 "unit": point["unit"],
                 "family": family,
-                "value": device["state"][key]["value"],
+                "value": value,
             }));
         }
-        if let Some(point) = power.filter(|_| !followed) {
-            suggested.push(json!({ "device": id, "name": name, "point": point }));
-        }
+        measuring.extend(best.map(|(_, m)| m));
     }
-    json!({ "points": points, "suggested": suggested })
+    json!({ "points": points, "measuring": measuring })
 }
 
 #[cfg(test)]
@@ -510,6 +636,50 @@ mod tests {
     }
 
     #[test]
+    fn the_preview_shows_before_and_after_and_writes_nothing() {
+        let (_dir, config) = house(
+            "preview",
+            "[server]\n\n[[driver]]\nid = \"z2m\"\nkind = \"z2m\"\n",
+        );
+        let before = std::fs::read_to_string(&config).unwrap();
+        let body = json!({
+            "section": { "tariff": { "prices": { "HP": 0.2081, "HC": 0.1635 } } },
+            "offpeak": ["22:00-06:00"],
+        });
+        let seen = preview(&config, &body.to_string()).unwrap();
+        assert_eq!(seen["before"], "");
+        let after = seen["after"].as_str().unwrap();
+        assert!(
+            after.starts_with("[[driver]]\nid = \"tarif\"\nkind = \"offpeak\""),
+            "{after}"
+        );
+        assert!(
+            after.contains("[energy.tariff]\nperiod = \"tarif:periode/period\""),
+            "{after}"
+        );
+        assert!(
+            !after.contains("z2m"),
+            "only what this screen writes: {after}"
+        );
+        assert_eq!(seen["error"], Json::Null);
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+        // Once written, « before » is what the file holds.
+        put(&config, &body.to_string()).unwrap();
+        assert_eq!(
+            preview(&config, &body.to_string()).unwrap()["before"],
+            after
+        );
+        // What Moli would refuse: said, nothing written.
+        let bad = json!({ "section": { "meter": [{ "id": "x", "name": "X", "point": "x", "role": "appliance" }] } });
+        let seen = preview(&config, &bad.to_string()).unwrap();
+        assert!(
+            seen["error"].as_str().unwrap().contains("not a point id"),
+            "{seen}"
+        );
+        assert_eq!(seen["after"], "");
+    }
+
+    #[test]
     fn the_official_engine_runs_the_hours_and_the_tariff_that_follows_them() {
         use std::io::{Read as _, Write as _};
         let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -566,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn the_points_say_what_they_hold_and_plugs_not_followed_are_suggested() {
+    fn the_points_say_what_they_hold_and_what_measures_is_listed() {
         let snapshot = json!({ "devices": [
             { "id": "meross-1:aaaa", "native_name": "Smart Plug", "label": { "name": "Télé" },
               "points": [
@@ -599,10 +769,24 @@ mod tests {
         assert_eq!(of("linky:compteur/papp")["family"], "power");
         assert_eq!(of("meross-2:bbbb/power")["name"], "Smart Plug");
         assert!(points.iter().all(|p| p["device"] != "energie:maison"));
-        // The plug already followed is not suggested again; a VA is no plug.
+        // Every device that measures, its power first; the Linky's VA is no
+        // consumption to add up.
+        let measuring = out["measuring"].as_array().unwrap();
+        assert_eq!(measuring.len(), 2, "{measuring:?}");
+        assert_eq!(measuring[0]["point"], "meross-1:aaaa/power");
+        assert_eq!(measuring[0]["guess"], "appliance");
+        assert_eq!(measuring[0]["followed"], false);
+        assert_eq!(measuring[1]["followed"], true);
+    }
+
+    #[test]
+    fn what_a_device_is_is_guessed_from_what_it_says() {
+        assert_eq!(guess("linky-tic:compteur", &json!({})), "grid");
+        assert_eq!(guess("shelly:abc", &json!({ "model": "Pro 3EM" })), "total");
+        assert_eq!(guess("solarman:x", &json!({})), "solar");
         assert_eq!(
-            out["suggested"],
-            json!([{ "device": "meross-1:aaaa", "name": "Télé", "point": "meross-1:aaaa/power" }])
+            guess("meross-1:aaaa", &json!({ "model": "MSS310" })),
+            "appliance"
         );
     }
 }

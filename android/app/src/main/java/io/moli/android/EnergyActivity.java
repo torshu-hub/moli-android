@@ -2,8 +2,8 @@ package io.moli.android;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.TimePickerDialog;
 import android.content.Intent;
-import android.content.res.Configuration;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.os.Handler;
@@ -20,12 +20,12 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
-import android.widget.ListView;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
-import android.widget.Toast;
 import java.text.DecimalFormat;
 import java.text.Normalizer;
 import java.util.ArrayList;
@@ -38,198 +38,177 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.function.Consumer;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
- * The house's energy, set up from the tablet: the official `[energy]`
- * section of moli.toml (meters, driven loads, bill and tariff, live gauge,
- * battery), each in its own form, its points chosen among the house's.
- * Saving writes the whole section (energy.rs, held to the official check),
- * then restarts Moli as the integrations screen does. What the dashboard
- * already sets (the house's price per kWh) stays there.
+ * The house's energy, in the family's words: the electricity contract
+ * (one price, or peak and off-peak hours chosen on a clock), what Moli
+ * follows (one table of everything that measures, ticked), the water heater
+ * Moli can drive, and, folded, the live gauge and a home battery.
+ *
+ * Nothing is written while choosing: « Enregistrer » writes the whole
+ * official `[energy]` section and the block of off-peak hours at once
+ * (energy.rs, held to Moli's own check), then restarts Moli once; the page
+ * stays as it is. « Voir ce qui sera écrit » shows that part of moli.toml
+ * now and after. The single price of a kWh goes where the dashboard's card
+ * puts it.
  */
 public final class EnergyActivity extends Activity {
-    /** The roles of a meter (moli-energy `Role`), in the order offered. */
-    static final String[] ROLES = {"appliance", "circuit", "total", "grid", "solar", "export", "gas", "charge", "discharge"};
+    /** What a meter measures (moli-energy `Role`), in the order offered. */
+    static final String[] KINDS = {"appliance", "circuit", "total", "grid", "solar", "export", "gas", "charge", "discharge"};
+    static final String PEAK = "HP", OFF_PEAK = "HC";
 
     private final Look ui = new Look(this);
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService work = Executors.newSingleThreadExecutor();
 
-    /** The section as written in moli.toml (`{}` when the house has none). */
-    private JSONObject energy = new JSONObject();
-    /** The off-peak hours of the house (block `heures-creuses`), and the period they give (null: none). */
-    private JSONArray offpeak = new JSONArray();
-    private String offpeakPoint;
-    static final String PEAK = "HP", OFF_PEAK = "HC";
-    /** The house's points (null: Moli did not answer), and the plugs no meter follows. */
-    private JSONArray points, suggested = new JSONArray();
+    // ---- What the house holds ----
+
+    /** `[energy]` as written in moli.toml (`{}` when the house has none). */
+    private JSONObject saved = new JSONObject();
+    /** The off-peak hours written (block `heures-creuses`). */
+    private JSONArray savedHours = new JSONArray();
+    /** The house's points (null: Moli did not answer), and what measures. */
+    private JSONArray points;
     private final Map<String, JSONObject> pointById = new HashMap<>();
-    private boolean wide, busy;
-    private LinearLayout list, side;
-    private View listPane, gap;
-    private TextView banner;
-    private Form form;
+    private JSONArray measuring = new JSONArray();
+    /** The single price of a kWh the dashboard keeps (null: none). */
+    private Double housePrice;
+    /** The draft as written: the screen has changes when it differs. */
+    private String baseline = "", baselineWritten = "";
 
-    @Override protected void onCreate(Bundle saved) {
-        super.onCreate(saved);
+    // ---- The screen ----
+
+    private boolean busy, ready, heaterPossible;
+    private TextView banner, unsaved;
+    private Button save;
+    private final List<Row> rows = new ArrayList<>();
+    private final List<JSONObject> loads = new ArrayList<>();
+    private LinearLayout loadsBox;
+    private boolean peakHours;
+    private EditText singlePrice, peakPrice, offPeakPrice, fee;
+    private Stretches contractHours;
+    private Switch followLinky;
+    private String linkyPeriod;
+    private CheckBox liveOn, batteryOn;
+    private Spinner livePower, batterySoc, batteryPower;
+    private List<JSONObject> liveOptions = new ArrayList<>(), socOptions = new ArrayList<>(), batteryPowerOptions = new ArrayList<>();
+    private EditText liveContract, batteryCapacity;
+    private Switch batteryReversed;
+
+    @Override protected void onCreate(Bundle state) {
+        super.onCreate(state);
         getWindow().getDecorView().setBackgroundColor(Look.PAGE);
-        build();
-        if (!Setup.config(this).exists() || !ProtectedKey.exists(this)) {
-            banner.setText(R.string.setup_no_house);
-            banner.setVisibility(View.VISIBLE);
-            return;
-        }
-        load();
-    }
-
-    @Override public void onConfigurationChanged(Configuration changed) {
-        super.onConfigurationChanged(changed);
-        if ((changed.screenWidthDp >= 720) == wide) return;
-        build();
-        showList();
-        showSide();
-    }
-
-    /** Two panes side by side on a tablet, one under the other on a phone. */
-    private void build() {
-        wide = getResources().getConfiguration().screenWidthDp >= 720;
         LinearLayout root = ui.column();
-        root.setPadding(ui.dp(20), ui.dp(12), ui.dp(20), 0);
-        banner = ui.text("", 15, android.graphics.Color.WHITE, false);
-        banner.setPadding(ui.dp(14), ui.dp(10), ui.dp(14), ui.dp(10));
-        banner.setBackground(ui.round(Look.INFO, 10));
-        banner.setVisibility(View.GONE);
-        root.addView(banner, ui.matchWrap(0, 0, 0, ui.dp(10)));
-        LinearLayout panes = new LinearLayout(this);
-        panes.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
-        list = ui.column();
-        side = ui.column();
-        if (wide) {
-            listPane = ui.scroll(list);
-            panes.addView(listPane, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2));
-            gap = new View(this);
-            panes.addView(gap, new LinearLayout.LayoutParams(ui.dp(20), 1));
-            panes.addView(ui.scroll(side), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 3));
-            root.addView(panes, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        } else {
-            LinearLayout both = ui.column();
-            listPane = list;
-            gap = null;
-            both.addView(list);
-            both.addView(side, ui.matchWrap(0, ui.dp(16), 0, 0));
-            root.addView(ui.scroll(both), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        }
+        root.setPadding(ui.dp(20), ui.dp(20), ui.dp(20), 0);
+        boolean house = Setup.config(this).exists() && ProtectedKey.exists(this);
+        root.addView(ui.note(getString(house ? R.string.energy_reading : R.string.setup_no_house)));
         setContentView(root);
+        if (house) load();
     }
 
-    // ---- Data ----
+    // ---- Reading ----
 
-    /** Reads the section, then the house's points (Moli running). */
     private void load() {
         work.execute(() -> {
             try {
                 JSONObject read = Setup.energy(this);
                 JSONObject house = null;
-                try { house = Setup.energyPoints(this); } catch (Exception silent) { /* Moli not answering: typed by hand */ }
-                JSONObject points = house;
+                try { house = Setup.energyPoints(this); } catch (Exception silent) { /* Moli not answering: what is written only */ }
+                JSONObject seen = house;
                 handler.post(() -> {
                     if (isDestroyed()) return;
-                    energy = read.optJSONObject("section") == null ? new JSONObject() : read.optJSONObject("section");
-                    offpeak = read.optJSONArray("offpeak") == null ? new JSONArray() : read.optJSONArray("offpeak");
-                    offpeakPoint = read.isNull("offpeak_point") ? null : read.optString("offpeak_point");
-                    takePoints(points);
-                    form = null;
-                    showList();
-                    showSide();
-                    // Just restarted, Moli meets its devices as they answer: read them again.
-                    handler.removeCallbacks(again);
-                    handler.postDelayed(again, 10_000);
+                    take(read);
+                    takePoints(seen);
+                    makeRows();
+                    build();
+                    settle();
+                    ready = true;
+                    refreshChanged();
                 });
             } catch (Exception failure) {
                 handler.post(() -> {
-                    banner.setText(getString(R.string.setup_failed, String.valueOf(failure.getMessage())));
-                    banner.setBackground(ui.round(Look.BAD, 10));
-                    banner.setVisibility(View.VISIBLE);
+                    LinearLayout root = ui.column();
+                    root.setPadding(ui.dp(20), ui.dp(20), ui.dp(20), 0);
+                    root.addView(ui.note(getString(R.string.setup_failed, String.valueOf(failure.getMessage()))));
+                    setContentView(root);
                 });
             }
         });
     }
 
+    private void take(JSONObject read) {
+        saved = read.optJSONObject("section") == null ? new JSONObject() : read.optJSONObject("section");
+        savedHours = read.optJSONArray("offpeak") == null ? new JSONArray() : read.optJSONArray("offpeak");
+    }
+
     private void takePoints(JSONObject read) {
         points = read == null ? null : read.optJSONArray("points");
-        suggested = read == null ? new JSONArray() : read.optJSONArray("suggested");
+        measuring = read == null || read.optJSONArray("measuring") == null ? new JSONArray() : read.optJSONArray("measuring");
+        housePrice = read == null || read.isNull("house_price") ? null : read.optDouble("house_price");
         pointById.clear();
         for (int i = 0; points != null && i < points.length(); i++)
             pointById.put(points.optJSONObject(i).optString("id"), points.optJSONObject(i));
     }
 
-    /** The house's points read again; the list shown again unless a form is open. */
-    private final Runnable again = () -> work.execute(() -> {
-        JSONObject house;
-        try { house = Setup.energyPoints(this); } catch (Exception silent) { return; }
-        handler.post(() -> {
-            if (isDestroyed() || busy) return;
-            takePoints(house);
-            if (form == null) showList();
-        });
-    });
+    /** The meters written first, then each device that measures and is not followed yet: rows never move. */
+    private void makeRows() {
+        rows.clear();
+        Set<String> covered = new HashSet<>();
+        JSONArray meters = saved.optJSONArray("meter");
+        for (int i = 0; meters != null && i < meters.length(); i++) {
+            JSONObject m = meters.optJSONObject(i);
+            Row r = new Row();
+            r.meter = copy(m);
+            r.on = true;
+            r.name = m.optString("name", m.optString("id"));
+            r.point = m.optString("point");
+            r.kind = m.optString("role", "appliance");
+            r.within = m.optString("within", "");
+            r.price = m.has("price") ? m.optDouble("price") : null;
+            r.device = deviceOf(r.point);
+            rows.add(r);
+            covered.add(r.device);
+        }
+        for (int i = 0; i < measuring.length(); i++) {
+            JSONObject d = measuring.optJSONObject(i);
+            if (covered.contains(d.optString("device"))) continue;
+            Row r = new Row();
+            r.name = d.optString("name");
+            r.point = d.optString("point");
+            r.kind = d.optString("guess", "appliance");
+            r.device = d.optString("device");
+            rows.add(r);
+        }
+        loads.clear();
+        JSONArray driven = saved.optJSONArray("load");
+        for (int i = 0; driven != null && i < driven.length(); i++) loads.add(copy(driven.optJSONObject(i)));
+        // A Linky read on the spot says the period itself.
+        linkyPeriod = null;
+        for (int i = 0; points != null && i < points.length(); i++) {
+            JSONObject p = points.optJSONObject(i);
+            if ("text".equals(p.optString("family")) && p.optString("device").toLowerCase(Locale.ROOT).contains("linky")) { linkyPeriod = p.optString("id"); break; }
+        }
+    }
 
-    JSONArray array(String key) {
-        JSONArray a = energy.optJSONArray(key);
-        return a == null ? new JSONArray() : a;
+    static String deviceOf(String point) {
+        int slash = point.indexOf('/');
+        return slash < 0 ? point : point.substring(0, slash);
     }
 
     static JSONObject copy(JSONObject o) {
         try { return new JSONObject(o == null ? "{}" : o.toString()); } catch (JSONException impossible) { throw new IllegalStateException(impossible); }
     }
 
-    /** The section with `key` set to `value` (null, an empty list or table: taken out). */
-    JSONObject with(String key, Object value) {
-        JSONObject next = copy(energy);
-        boolean empty = value == null
-                || (value instanceof JSONArray && ((JSONArray) value).length() == 0)
-                || (value instanceof JSONObject && ((JSONObject) value).length() == 0);
-        try { if (empty) next.remove(key); else next.put(key, value); } catch (JSONException impossible) { throw new IllegalStateException(impossible); }
-        return next;
-    }
-
-    /** The list `key` with entry `index` replaced (-1: added; `entry` null: removed). */
-    JSONObject withEntry(String key, int index, JSONObject entry) {
-        JSONArray all = new JSONArray();
-        JSONArray now = array(key);
-        for (int i = 0; i < now.length(); i++) {
-            if (i != index) all.put(now.optJSONObject(i));
-            else if (entry != null) all.put(entry);
-        }
-        if (index < 0 && entry != null) all.put(entry);
-        return with(key, all);
-    }
-
-    /** An id from a name (`Télé du salon` → `tele_du_salon`), free in the list `key`. */
-    String freeId(String key, String name) {
-        String base = Normalizer.normalize(name, Normalizer.Form.NFD).replaceAll("\\p{M}", "")
-                .toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "_").replaceAll("^_+|_+$", "");
-        if (base.isEmpty()) base = "meter".equals(key) ? "compteur" : "charge";
-        Set<String> taken = new HashSet<>();
-        JSONArray all = array(key);
-        for (int i = 0; i < all.length(); i++) taken.add(all.optJSONObject(i).optString("id"));
-        String id = base;
-        for (int n = 2; taken.contains(id); n++) id = base + "_" + n;
-        return id;
-    }
-
     // ---- Words ----
 
-    String roleWords(String role) {
-        int id = getResources().getIdentifier("energy_role_" + role, "string", getPackageName());
-        return id == 0 ? role : getString(id);
+    String kindWords(String kind) {
+        int id = getResources().getIdentifier("energy_kind_" + kind, "string", getPackageName());
+        return id == 0 ? kind : getString(id);
     }
 
-    /** A number to read (two decimals at most, the person's separator). */
     static String number(Object v) {
         if (!(v instanceof Number)) return null;
         return new DecimalFormat("0.##").format(((Number) v).doubleValue());
@@ -241,200 +220,917 @@ public final class EnergyActivity extends Activity {
         return java.math.BigDecimal.valueOf(((Number) v).doubleValue()).stripTrailingZeros().toPlainString();
     }
 
-    /** A point as the family reads it: « Télé · Puissance · 52 W », else its id. */
+    /** What a point says now: « 52 W », or nothing. */
+    String now(String point) {
+        JSONObject p = pointById.get(point);
+        if (p == null) return "";
+        String v = number(p.opt("value"));
+        if (v == null) return "";
+        return p.isNull("unit") ? v : v + " " + p.optString("unit");
+    }
+
+    /** A point as the family reads it: « Télé · Puissance · 52 W ». */
     String pointWords(String id) {
         JSONObject p = pointById.get(id);
         if (p == null) return id;
-        StringBuilder out = new StringBuilder(p.optString("name")).append(" · ").append(p.optString("label"));
-        String now = number(p.opt("value"));
-        if (now == null && p.opt("value") instanceof String) now = p.optString("value");
-        if (now != null) out.append(" · ").append(now).append(p.isNull("unit") ? "" : " " + p.optString("unit"));
-        return out.toString();
+        String v = now(id);
+        return p.optString("name") + " · " + p.optString("label") + (v.isEmpty() ? "" : " · " + v);
     }
 
-    // ---- Left pane: the house's energy ----
-
-    private void showList() {
-        if (list == null) return;
-        list.removeAllViews();
-        list.addView(ui.heading(getString(R.string.energy)));
-        if (points == null) list.addView(ui.note(getString(R.string.energy_no_points)));
-
-        LinearLayout meters = ui.card();
-        meters.addView(ui.title(getString(R.string.energy_meters)));
-        JSONArray all = array("meter");
-        if (all.length() == 0) meters.addView(ui.note(getString(R.string.energy_meters_empty)));
-        for (int i = 0; i < all.length(); i++) {
-            JSONObject m = all.optJSONObject(i);
-            int at = i;
-            meters.addView(entry(m.optString("name", m.optString("id")),
-                    roleWords(m.optString("role")) + " · " + pointWords(m.optString("point")),
-                    () -> open(new MeterForm(at, m))));
-        }
-        Button add = ui.flat(getString(R.string.energy_meter_add));
-        add.setOnClickListener(v -> open(new MeterForm(-1, null)));
-        meters.addView(add, ui.matchWrap(0, ui.dp(8), 0, 0));
-        list.addView(meters);
-
-        if (suggested.length() > 0) {
-            LinearLayout plugs = ui.card();
-            plugs.addView(ui.title(getString(R.string.energy_suggested)));
-            plugs.addView(ui.note(getString(R.string.energy_suggested_help)));
-            for (int i = 0; i < suggested.length(); i++) plugs.addView(suggestion(suggested.optJSONObject(i)));
-            list.addView(plugs);
-        }
-
-        LinearLayout loads = ui.card();
-        loads.addView(ui.title(getString(R.string.energy_loads)));
-        JSONArray driven = array("load");
-        if (driven.length() == 0) loads.addView(ui.note(getString(R.string.energy_loads_empty)));
-        for (int i = 0; i < driven.length(); i++) {
-            JSONObject l = driven.optJSONObject(i);
-            int at = i;
-            String power = number(l.opt("power_w"));
-            loads.addView(entry(l.optString("name", l.optString("id")),
-                    pointWords(l.optString("switch")) + (power == null ? "" : " · " + power + " W"),
-                    () -> open(new LoadForm(at, l))));
-        }
-        Button addLoad = ui.flat(getString(R.string.energy_load_add));
-        addLoad.setOnClickListener(v -> open(new LoadForm(-1, null)));
-        loads.addView(addLoad, ui.matchWrap(0, ui.dp(8), 0, 0));
-        list.addView(loads);
-
-        LinearLayout more = ui.card();
-        more.addView(ui.title(getString(R.string.energy_house)));
-        more.addView(entry(getString(R.string.energy_bill), billWords(), () -> open(new BillForm())));
-        JSONObject live = energy.optJSONObject("live");
-        more.addView(entry(getString(R.string.energy_live),
-                live == null ? getString(R.string.energy_not_set) : pointWords(live.optString("power")),
-                () -> open(new LiveForm())));
-        JSONObject battery = energy.optJSONObject("battery");
-        more.addView(entry(getString(R.string.energy_battery),
-                battery == null ? getString(R.string.energy_not_set)
-                        : battery.has("soc") ? pointWords(battery.optString("soc")) : pointWords(battery.optString("power")),
-                () -> open(new BatteryForm())));
-        list.addView(more);
-
-        Button page = ui.flat(getString(R.string.energy_open_page));
-        page.setOnClickListener(v -> openDashboard());
-        list.addView(page, ui.matchWrap(0, ui.dp(4), 0, 0));
+    static String clock(int minutes) {
+        return String.format(Locale.ROOT, "%02d:%02d", (minutes / 60) % 24, minutes % 60);
     }
 
-    private String billWords() {
-        List<String> parts = new ArrayList<>();
-        String fee = number(energy.opt("monthly_fee"));
-        if (fee != null) parts.add(getString(R.string.energy_fee_words, fee, energy.optString("currency", "€")));
-        JSONObject tariff = energy.optJSONObject("tariff");
-        JSONObject prices = tariff == null ? null : tariff.optJSONObject("prices");
-        if (prices != null) {
-            List<String> each = new ArrayList<>();
-            for (java.util.Iterator<String> k = prices.keys(); k.hasNext(); ) {
-                String name = k.next();
-                each.add(name + " " + plain(prices.opt(name)));
-            }
-            parts.add(String.join(", ", each));
-        }
-        if (offpeak.length() > 0) {
-            List<String> each = new ArrayList<>();
-            for (int i = 0; i < offpeak.length(); i++) each.add(offpeak.optString(i));
-            parts.add(getString(R.string.energy_off_peak_words, String.join(", ", each)));
-        }
-        if (energy.has("budget")) parts.add(getString(R.string.energy_budget_words));
-        return parts.isEmpty() ? getString(R.string.energy_not_set) : String.join(" · ", parts);
+    /** « 22:00-06:00 » as [start, end] minutes, null if unreadable. */
+    static int[] stretch(String text) {
+        String[] ends = text.split("-");
+        if (ends.length != 2) return null;
+        int a = minutes(ends[0]), b = minutes(ends[1]);
+        return a < 0 || b < 0 ? null : new int[] {a, b};
     }
 
-    /** One line of a card: what it is, what it says, opens its form. */
-    private View entry(String name, String words, Runnable open) {
-        LinearLayout e = ui.column();
-        e.setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10));
-        e.setBackground(ui.stroke(Look.CARD, Look.LINE, 10));
-        e.addView(ui.text(name, 15, Look.INK, true));
-        e.addView(ui.text(words, 13, Look.MUTED, false));
-        e.setOnClickListener(v -> { if (!busy) open.run(); });
-        e.setLayoutParams(ui.matchWrap(0, ui.dp(6), 0, 0));
+    static int minutes(String hm) {
+        String[] p = hm.trim().split(":");
+        try { return p.length == 2 ? Integer.parseInt(p[0].trim()) * 60 + Integer.parseInt(p[1].trim()) : -1; } catch (NumberFormatException bad) { return -1; }
+    }
+
+    // ---- Layout: two columns on the tablet, one on a phone (the contract first) ----
+
+    private void build() {
+        boolean wide = getResources().getConfiguration().screenWidthDp >= 720;
+        LinearLayout root = ui.column();
+        root.setPadding(ui.dp(20), ui.dp(12), ui.dp(20), 0);
+
+        LinearLayout head = ui.row();
+        LinearLayout titles = ui.column();
+        titles.addView(ui.text(getString(R.string.energy), 24, Look.INK, true));
+        unsaved = ui.text(getString(R.string.energy_unsaved), 13, Look.WARN, true);
+        unsaved.setVisibility(View.GONE);
+        titles.addView(unsaved);
+        head.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        Button preview = ui.flat(getString(R.string.energy_preview));
+        preview.setOnClickListener(v -> showPreview());
+        head.addView(preview, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ui.dp(48)));
+        save = ui.primary(getString(R.string.energy_save));
+        save.setOnClickListener(v -> saveAll(null));
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ui.dp(48));
+        sp.setMargins(ui.dp(10), 0, 0, 0);
+        head.addView(save, sp);
+        root.addView(head, ui.matchWrap(0, 0, 0, ui.dp(10)));
+
+        banner = ui.text("", 15, android.graphics.Color.WHITE, false);
+        banner.setPadding(ui.dp(14), ui.dp(10), ui.dp(14), ui.dp(10));
+        banner.setVisibility(View.GONE);
+        root.addView(banner, ui.matchWrap(0, 0, 0, ui.dp(10)));
+        if (points == null) root.addView(ui.note(getString(R.string.energy_no_moli)));
+
+        LinearLayout first = ui.column(), second = ui.column();
+        first.addView(followed(wide));
+        first.addView(heater());
+        second.addView(contract());
+        second.addView(others());
+
+        LinearLayout panes = new LinearLayout(this);
+        if (wide) {
+            panes.setOrientation(LinearLayout.HORIZONTAL);
+            panes.addView(first, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 3));
+            panes.addView(new View(this), new LinearLayout.LayoutParams(ui.dp(16), 1));
+            panes.addView(second, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2));
+        } else {
+            panes.setOrientation(LinearLayout.VERTICAL);
+            panes.addView(second);
+            panes.addView(first);
+        }
+        ScrollView scroll = ui.scroll(panes);
+        root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        setContentView(root);
+        refreshWithin();
+    }
+
+    private LinearLayout section(int title, int about) {
+        LinearLayout card = ui.card();
+        card.addView(ui.text(getString(title), 18, Look.INK, true));
+        if (about != 0) card.addView(ui.note(getString(about)));
+        return card;
+    }
+
+    /** Any change: compared with what is written, never written by itself. */
+    private final TextWatcher typed = new TextWatcher() {
+        @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+        @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+        @Override public void afterTextChanged(Editable s) { refreshChanged(); }
+    };
+
+    private final AdapterView.OnItemSelectedListener picked = new AdapterView.OnItemSelectedListener() {
+        @Override public void onItemSelected(AdapterView<?> parent, View v, int position, long id) { refreshChanged(); }
+        @Override public void onNothingSelected(AdapterView<?> parent) {}
+    };
+
+    private EditText amount(String hint) {
+        EditText e = ui.field(hint, InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        e.addTextChangedListener(typed);
         return e;
     }
 
-    /** A plug that measures, followed in one tap: an appliance whose energy Moli adds up. */
-    private View suggestion(JSONObject s) {
-        LinearLayout r = ui.row();
-        r.setPadding(0, ui.dp(6), 0, ui.dp(6));
-        TextView words = ui.text(s.optString("name") + "\n" + pointWords(s.optString("point")), 14, Look.INK, false);
-        r.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        Button follow = ui.primary(getString(R.string.energy_follow));
-        follow.setOnClickListener(v -> {
-            if (busy) return;
-            try {
-                JSONObject meter = new JSONObject()
-                        .put("id", freeId("meter", s.optString("name")))
-                        .put("name", s.optString("name"))
-                        .put("role", "appliance")
-                        .put("point", s.optString("point"))
-                        .put("integrate", true);
-                apply(withEntry("meter", -1, meter));
-            } catch (JSONException impossible) { throw new IllegalStateException(impossible); }
-        });
-        r.addView(follow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ui.dp(44)));
-        return r;
+    /** A labelled value with its unit after it (« 0.2081  €/kWh »). */
+    private void labelled(LinearLayout into, String label, View field, String unit) {
+        into.addView(ui.text(label, 14, Look.INK, true), ui.matchWrap(0, ui.dp(12), 0, ui.dp(4)));
+        LinearLayout line = ui.row();
+        line.addView(field, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        if (unit != null) {
+            TextView u = ui.text(unit, 15, Look.MUTED, false);
+            u.setPadding(ui.dp(10), 0, 0, 0);
+            line.addView(u);
+        }
+        into.addView(line);
     }
 
-    // ---- Right pane ----
+    private Spinner spinner(String[] words, int selected) {
+        Spinner s = new Spinner(this);
+        s.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, words));
+        s.setSelection(Math.max(0, Math.min(selected, words.length - 1)));
+        return s;
+    }
 
-    void open(Form f) { form = f; showList(); showSide(); }
+    // ---- The contract ----
 
-    void closeForm() { form = null; showList(); showSide(); }
+    private View contract() {
+        LinearLayout card = section(R.string.energy_contract, 0);
+        JSONObject tariff = saved.optJSONObject("tariff");
+        JSONObject prices = tariff == null ? null : tariff.optJSONObject("prices");
+        if (prices == null) prices = new JSONObject();
+        peakHours = tariff != null;
 
-    private void showSide() {
-        if (side == null) return;
-        // An open form takes the whole screen; the list comes back with it closed.
-        int shown = form == null ? View.VISIBLE : View.GONE;
-        listPane.setVisibility(shown);
-        if (gap != null) gap.setVisibility(shown);
-        side.removeAllViews();
-        for (android.view.ViewParent p = side.getParent(); p != null; p = p.getParent())
-            if (p instanceof ScrollView) { ScrollView top = (ScrollView) p; top.post(() -> top.scrollTo(0, 0)); break; }
-        if (form != null) { form.show(); return; }
-        LinearLayout about = ui.card();
-        about.addView(ui.title(getString(R.string.energy_about_title)));
-        about.addView(ui.text(getString(R.string.energy_about), 14, Look.INK, false));
-        about.addView(ui.note(getString(R.string.energy_price_elsewhere)));
+        RadioGroup formula = new RadioGroup(this);
+        formula.setOrientation(RadioGroup.HORIZONTAL);
+        RadioButton single = new RadioButton(this);
+        single.setText(R.string.energy_single);
+        single.setTextSize(16);
+        single.setId(View.generateViewId());
+        RadioButton peak = new RadioButton(this);
+        peak.setText(R.string.energy_peak_hours);
+        peak.setTextSize(16);
+        peak.setId(View.generateViewId());
+        formula.addView(single);
+        formula.addView(peak);
+        card.addView(formula, ui.matchWrap(0, ui.dp(8), 0, 0));
+
+        LinearLayout singleBox = ui.column();
+        singlePrice = amount("0.2516");
+        if (housePrice != null) singlePrice.setText(plain(housePrice));
+        labelled(singleBox, getString(R.string.energy_single_price), singlePrice, getString(R.string.energy_per_kwh));
+        singleBox.addView(ui.note(getString(R.string.energy_single_help)));
+        card.addView(singleBox);
+
+        LinearLayout peakBox = ui.column();
+        peakPrice = amount("0.2081");
+        if (prices.has(PEAK)) peakPrice.setText(plain(prices.opt(PEAK)));
+        labelled(peakBox, getString(R.string.energy_peak_price), peakPrice, getString(R.string.energy_per_kwh));
+        offPeakPrice = amount("0.1635");
+        if (prices.has(OFF_PEAK)) offPeakPrice.setText(plain(prices.opt(OFF_PEAK)));
+        labelled(peakBox, getString(R.string.energy_off_peak_price), offPeakPrice, getString(R.string.energy_per_kwh));
+        List<String> other = new ArrayList<>();
+        for (java.util.Iterator<String> k = prices.keys(); k.hasNext(); ) {
+            String name = k.next();
+            if (!name.equals(PEAK) && !name.equals(OFF_PEAK)) other.add(name);
+        }
+        if (!other.isEmpty()) peakBox.addView(ui.note(getString(R.string.energy_other_periods, String.join(", ", other))));
+
+        String period = tariff == null ? "" : tariff.optString("period");
+        followLinky = new Switch(this);
+        followLinky.setText(R.string.energy_follow_linky);
+        followLinky.setTextSize(15);
+        followLinky.setChecked(linkyPeriod != null && (period.equals(linkyPeriod) || tariff == null));
+        followLinky.setVisibility(linkyPeriod == null ? View.GONE : View.VISIBLE);
+        peakBox.addView(followLinky, ui.matchWrap(0, ui.dp(14), 0, 0));
+        List<int[]> held = new ArrayList<>();
+        for (int i = 0; i < savedHours.length(); i++) {
+            int[] s = stretch(savedHours.optString(i));
+            if (s != null) held.add(s);
+        }
+        if (held.isEmpty()) held.add(new int[] {22 * 60, 6 * 60});
+        contractHours = new Stretches(R.string.energy_off_peak_hours, R.string.energy_off_peak_help, held);
+        peakBox.addView(contractHours.view);
+        card.addView(peakBox);
+
+        fee = amount("19.56");
+        if (saved.has("monthly_fee")) fee.setText(plain(saved.opt("monthly_fee")));
+        labelled(card, getString(R.string.energy_fee), fee, getString(R.string.energy_per_month));
+        card.addView(ui.note(getString(R.string.energy_fee_help)));
+
+        Runnable show = () -> {
+            singleBox.setVisibility(peakHours ? View.GONE : View.VISIBLE);
+            peakBox.setVisibility(peakHours ? View.VISIBLE : View.GONE);
+            contractHours.view.setVisibility(followLinky.isChecked() && linkyPeriod != null ? View.GONE : View.VISIBLE);
+        };
+        formula.check(peakHours ? peak.getId() : single.getId());
+        formula.setOnCheckedChangeListener((g, id) -> { peakHours = id == peak.getId(); show.run(); refreshChanged(); });
+        followLinky.setOnCheckedChangeListener((b, on) -> { show.run(); refreshChanged(); });
+        show.run();
+        return card;
+    }
+
+    /** Stretches of hours, each « de 22:00 à 06:00 » chosen on a clock, the hours a day under them. */
+    final class Stretches {
+        final List<int[]> list;
+        final LinearLayout view = ui.column();
+        private final LinearLayout lines = ui.column();
+        private final TextView total = ui.text("", 13, Look.MUTED, false);
+
+        Stretches(int title, int help, List<int[]> held) {
+            list = new ArrayList<>(held);
+            view.addView(ui.text(getString(title), 14, Look.INK, true), ui.matchWrap(0, ui.dp(12), 0, ui.dp(2)));
+            if (help != 0) view.addView(ui.note(getString(help)));
+            view.addView(lines);
+            Button add = ui.flat(getString(R.string.energy_add_stretch));
+            add.setOnClickListener(v -> {
+                list.add(list.isEmpty() ? new int[] {22 * 60, 6 * 60} : new int[] {12 * 60, 14 * 60});
+                fill();
+                refreshChanged();
+            });
+            view.addView(add, ui.matchWrap(0, ui.dp(6), 0, 0));
+            view.addView(total, ui.matchWrap(0, ui.dp(4), 0, 0));
+            fill();
+        }
+
+        JSONArray written() {
+            JSONArray out = new JSONArray();
+            for (int[] s : list) out.put(clock(s[0]) + "-" + clock(s[1]));
+            return out;
+        }
+
+        private void fill() {
+            lines.removeAllViews();
+            int sum = 0;
+            for (int[] s : list) {
+                LinearLayout line = ui.row();
+                line.addView(ui.text(getString(R.string.energy_from), 15, Look.INK, false));
+                line.addView(time(s, 0));
+                line.addView(ui.text(getString(R.string.energy_to), 15, Look.INK, false));
+                line.addView(time(s, 1));
+                Button drop = ui.flat("✕");
+                drop.setContentDescription(getString(R.string.energy_remove_stretch));
+                drop.setOnClickListener(v -> { list.remove(s); fill(); refreshChanged(); });
+                line.addView(drop, new LinearLayout.LayoutParams(ui.dp(48), ui.dp(44)));
+                lines.addView(line, ui.matchWrap(0, ui.dp(6), 0, 0));
+                sum += (s[1] - s[0] + 24 * 60) % (24 * 60);
+            }
+            String hours = sum / 60 + " h" + (sum % 60 == 0 ? "" : " " + String.format(Locale.ROOT, "%02d", sum % 60));
+            total.setText(list.isEmpty() ? "" : getString(R.string.energy_hours_total, hours));
+        }
+
+        private Button time(int[] s, int end) {
+            Button b = ui.flat(clock(s[end]));
+            b.setTextSize(17);
+            b.setOnClickListener(v -> new TimePickerDialog(EnergyActivity.this, (picker, h, m) -> {
+                s[end] = h * 60 + m;
+                fill();
+                refreshChanged();
+            }, s[end] / 60, s[end] % 60, true).show());
+            LinearLayout.LayoutParams margin = new LinearLayout.LayoutParams(ui.dp(96), ui.dp(44));
+            margin.setMargins(ui.dp(8), 0, ui.dp(8), 0);
+            b.setLayoutParams(margin);
+            return b;
+        }
+    }
+
+    // ---- What Moli follows ----
+
+    /** One line of the table: a device that measures, ticked when Moli counts it. */
+    final class Row {
+        JSONObject meter;   // as written (null: not followed yet)
+        JSONObject pending; // as it would be written now
+        boolean on;
+        String name, point, kind, within = "", device, newId;
+        Double price;
+        CheckBox box;
+        TextView title, subtitle;
+        Spinner kindChoice, withinChoice;
+        final List<String> withinIds = new ArrayList<>();
+    }
+
+    private View followed(boolean wide) {
+        LinearLayout card = section(R.string.energy_followed, R.string.energy_followed_help);
+        if (rows.isEmpty()) card.addView(ui.note(getString(points == null ? R.string.energy_no_moli : R.string.energy_nothing_measures)));
+        for (Row r : rows) card.addView(row(r, wide));
+        TextView whole = ui.note(getString(R.string.energy_no_whole_house));
+        whole.setTag("whole");
+        card.addView(whole);
         Button page = ui.flat(getString(R.string.energy_open_page));
-        page.setOnClickListener(v -> openDashboard());
-        about.addView(page, ui.matchWrap(0, ui.dp(8), 0, 0));
-        side.addView(about);
+        page.setOnClickListener(v -> startActivity(new Intent(this, DashboardActivity.class).putExtra(DashboardActivity.ROUTE, "#/energie")));
+        card.addView(page, ui.matchWrap(0, ui.dp(8), 0, 0));
+        return card;
     }
 
-    void openDashboard() {
-        startActivity(new Intent(this, DashboardActivity.class).putExtra(DashboardActivity.ROUTE, "#/energie"));
+    private View row(Row r, boolean wide) {
+        LinearLayout line = wide ? ui.row() : ui.column();
+        line.setPadding(0, ui.dp(10), 0, ui.dp(10));
+        LinearLayout first = ui.row();
+        r.box = new CheckBox(this);
+        r.box.setChecked(r.on);
+        first.addView(r.box);
+        LinearLayout names = ui.column();
+        r.title = ui.text(r.name, 16, Look.INK, true);
+        r.subtitle = ui.text(subtitle(r), 13, Look.MUTED, false);
+        names.addView(r.title);
+        names.addView(r.subtitle);
+        first.addView(names, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView nowText = ui.text(now(r.point), 15, Look.ACCENT, true);
+        nowText.setGravity(Gravity.END);
+        first.addView(nowText, new LinearLayout.LayoutParams(ui.dp(84), ViewGroup.LayoutParams.WRAP_CONTENT));
+        line.addView(first, wide ? new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1) : ui.matchWrap(0, 0, 0, 0));
+
+        LinearLayout second = ui.row();
+        if (!wide) second.setPadding(ui.dp(40), ui.dp(4), 0, 0);
+        String[] words = new String[KINDS.length];
+        for (int i = 0; i < KINDS.length; i++) words[i] = kindWords(KINDS[i]);
+        r.kindChoice = spinner(words, Arrays.asList(KINDS).indexOf(r.kind));
+        r.kindChoice.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View v, int position, long id) { refreshWithin(); refreshChanged(); }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+        second.addView(r.kindChoice, new LinearLayout.LayoutParams(ui.dp(wide ? 230 : 200), ui.dp(48)));
+        r.withinChoice = new Spinner(this);
+        r.withinChoice.setOnItemSelectedListener(picked);
+        LinearLayout.LayoutParams wp = new LinearLayout.LayoutParams(ui.dp(170), ui.dp(48));
+        wp.setMargins(ui.dp(6), 0, 0, 0);
+        second.addView(r.withinChoice, wp);
+        Button more = ui.flat(getString(R.string.energy_details));
+        more.setOnClickListener(v -> details(r));
+        LinearLayout.LayoutParams mp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ui.dp(44));
+        mp.setMargins(ui.dp(6), 0, 0, 0);
+        second.addView(more, mp);
+        line.addView(second);
+        r.box.setOnCheckedChangeListener((b, on) -> { refreshWithin(); refreshChanged(); });
+        return line;
     }
 
-    void apply(JSONObject section) { apply(section, null); }
+    private String subtitle(Row r) {
+        List<String> parts = new ArrayList<>();
+        for (int i = 0; i < measuring.length(); i++) {
+            JSONObject d = measuring.optJSONObject(i);
+            if (d.optString("device").equals(r.device) && !d.isNull("room")) parts.add(d.optString("room"));
+        }
+        JSONObject p = pointById.get(r.point);
+        if (p != null) parts.add(p.optString("label"));
+        else if (points != null) parts.add(getString(R.string.energy_not_answering));
+        if (r.price != null) parts.add(getString(R.string.energy_own_price, plain(r.price)));
+        return String.join(" · ", parts);
+    }
 
-    /** Writes the new section (and the off-peak hours) and restarts Moli, off the UI thread. */
-    void apply(JSONObject section, JSONArray hours) {
-        busy = true;
-        banner.setText(R.string.setup_restarting);
-        banner.setBackground(ui.round(Look.INFO, 10));
+    private String kindOf(Row r) { return KINDS[Math.max(0, r.kindChoice.getSelectedItemPosition())]; }
+
+    /** Ids for the rows not written yet, from their names, in the table's order. */
+    private void assignIds() {
+        Set<String> taken = new HashSet<>();
+        for (Row r : rows) if (r.meter != null) taken.add(r.meter.optString("id"));
+        for (Row r : rows) if (r.meter == null) { r.newId = freeId(r.name, taken); taken.add(r.newId); }
+    }
+
+    private static String idOf(Row r) { return r.meter != null && r.meter.has("id") ? r.meter.optString("id") : r.newId; }
+
+    static String freeId(String name, Set<String> taken) {
+        String base = Normalizer.normalize(name, Normalizer.Form.NFD).replaceAll("\\p{M}", "")
+                .toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "_").replaceAll("^_+|_+$", "");
+        if (base.isEmpty()) base = "compteur";
+        String id = base;
+        for (int n = 2; taken.contains(id); n++) id = base + "_" + n;
+        return id;
+    }
+
+    /** « Dans quel circuit »: the circuits ticked (or the whole house), for an appliance. */
+    private void refreshWithin() {
+        assignIds();
+        List<Row> circuits = new ArrayList<>();
+        for (Row r : rows) if (r.box != null && r.box.isChecked() && ("circuit".equals(kindOf(r)) || "total".equals(kindOf(r)))) circuits.add(r);
+        boolean whole = false;
+        for (Row r : rows) {
+            if (r.box == null) continue;
+            String k = kindOf(r);
+            if (r.box.isChecked() && ("grid".equals(k) || "total".equals(k))) whole = true;
+            int at = r.withinChoice.getSelectedItemPosition();
+            String keep = at > 0 && at < r.withinIds.size() ? r.withinIds.get(at) : (r.withinIds.isEmpty() ? r.within : "");
+            r.withinIds.clear();
+            List<String> words = new ArrayList<>();
+            r.withinIds.add("");
+            words.add(getString(R.string.energy_within_none));
+            for (Row c : circuits) {
+                if (c == r) continue;
+                r.withinIds.add(idOf(c));
+                words.add(getString(R.string.energy_within_named, c.name));
+            }
+            r.withinChoice.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, words));
+            r.withinChoice.setSelection(Math.max(0, r.withinIds.indexOf(keep)));
+            r.withinChoice.setVisibility("appliance".equals(k) && r.withinIds.size() > 1 ? View.VISIBLE : View.GONE);
+            r.kindChoice.setEnabled(r.box.isChecked());
+        }
+        View note = getWindow().getDecorView().findViewWithTag("whole");
+        if (note != null) note.setVisibility(whole ? View.GONE : View.VISIBLE);
+    }
+
+    /** A row's details: the name shown, the measure used, a price of its own. */
+    private void details(Row r) {
+        LinearLayout box = ui.column();
+        box.setPadding(ui.dp(20), ui.dp(8), ui.dp(20), 0);
+        EditText name = ui.field("", InputType.TYPE_CLASS_TEXT);
+        name.setText(r.name);
+        labelled(box, getString(R.string.energy_shown_name), name, null);
+        List<JSONObject> measures = new ArrayList<>();
+        for (int i = 0; points != null && i < points.length(); i++) {
+            JSONObject p = points.optJSONObject(i);
+            String f = p.optString("family"), u = p.optString("unit");
+            if (p.optString("device").equals(r.device) && (("power".equals(f) && !"VA".equals(u)) || "energy".equals(f))) measures.add(p);
+        }
+        Spinner measure = null;
+        if (measures.size() > 1) {
+            String[] words = new String[measures.size()];
+            int at = 0;
+            for (int i = 0; i < measures.size(); i++) {
+                String id = measures.get(i).optString("id");
+                words[i] = measures.get(i).optString("label") + (now(id).isEmpty() ? "" : " · " + now(id));
+                if (id.equals(r.point)) at = i;
+            }
+            measure = spinner(words, at);
+            labelled(box, getString(R.string.energy_measure_used), measure, null);
+            box.addView(ui.note(getString(R.string.energy_measure_help)));
+        }
+        EditText price = ui.field(getString(R.string.energy_contract_price), InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        if (r.price != null) price.setText(plain(r.price));
+        labelled(box, getString(R.string.energy_own_price_title), price, getString(R.string.energy_per_kwh));
+        box.addView(ui.note(getString(R.string.energy_own_price_help)));
+        Spinner chosen = measure;
+        new AlertDialog.Builder(this)
+                .setTitle(r.name)
+                .setView(ui.scroll(box))
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                    String n = name.getText().toString().trim();
+                    if (!n.isEmpty()) r.name = n;
+                    if (chosen != null) r.point = measures.get(chosen.getSelectedItemPosition()).optString("id");
+                    Double p = decimal(price);
+                    r.price = p != null && !p.isNaN() && p >= 0 ? p : null;
+                    r.title.setText(r.name);
+                    r.subtitle.setText(subtitle(r));
+                    refreshWithin();
+                    refreshChanged();
+                })
+                .show();
+    }
+
+    // ---- The water heater ----
+
+    private View heater() {
+        LinearLayout card = section(R.string.energy_heater, R.string.energy_heater_help);
+        loadsBox = ui.column();
+        card.addView(loadsBox);
+        return card;
+    }
+
+    private List<JSONObject> pointsOf(String family, String unitNot) {
+        List<JSONObject> out = new ArrayList<>();
+        for (int i = 0; points != null && i < points.length(); i++) {
+            JSONObject p = points.optJSONObject(i);
+            if (family.equals(p.optString("family")) && (unitNot == null || !unitNot.equals(p.optString("unit")))) out.add(p);
+        }
+        return out;
+    }
+
+    /** The power at the main feed a water heater needs: the whole house, ticked. */
+    private String wholeHousePower() {
+        for (Row r : rows) if (r.box != null && r.box.isChecked() && "total".equals(kindOf(r))) {
+            JSONObject p = pointById.get(r.point);
+            if (p != null && "power".equals(p.optString("family"))) return r.point;
+        }
+        return null;
+    }
+
+    private void fillLoads() {
+        loadsBox.removeAllViews();
+        for (JSONObject l : loads) {
+            LinearLayout line = ui.row();
+            line.setPadding(0, ui.dp(8), 0, ui.dp(8));
+            LinearLayout names = ui.column();
+            names.addView(ui.text(l.optString("name"), 16, Look.INK, true));
+            JSONArray own = l.optJSONArray("offpeak");
+            String power = number(l.opt("power_w"));
+            names.addView(ui.text(pointWords(l.optString("switch")) + (power == null ? "" : " · " + power + " W") + " · "
+                    + getString(own == null || own.length() == 0 ? R.string.energy_heater_contract_hours : R.string.energy_heater_own_hours), 13, Look.MUTED, false));
+            line.addView(names, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            Button change = ui.flat(getString(R.string.energy_details));
+            change.setOnClickListener(v -> heaterSheet(l));
+            line.addView(change, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ui.dp(44)));
+            loadsBox.addView(line);
+        }
+        if (heaterPossible) {
+            Button add = ui.flat(getString(R.string.energy_heater_add));
+            add.setOnClickListener(v -> heaterSheet(null));
+            loadsBox.addView(add, ui.matchWrap(0, ui.dp(6), 0, 0));
+        } else if (loads.isEmpty()) {
+            loadsBox.addView(ui.note(getString(R.string.energy_heater_needs)));
+        }
+    }
+
+    /** One water heater: which switch, how strong, how long a day, when. */
+    private void heaterSheet(JSONObject held) {
+        JSONObject l = copy(held);
+        LinearLayout box = ui.column();
+        box.setPadding(ui.dp(20), ui.dp(8), ui.dp(20), 0);
+        EditText name = ui.field(getString(R.string.energy_heater_name), InputType.TYPE_CLASS_TEXT);
+        name.setText(l.optString("name", getString(R.string.energy_heater_name)));
+        labelled(box, getString(R.string.energy_shown_name), name, null);
+        List<JSONObject> switches = pointsOf("switch", null);
+        Spinner relay = pointSpinner(switches, l.optString("switch"), false);
+        labelled(box, getString(R.string.energy_heater_switch), relay, null);
+        List<JSONObject> powers = pointsOf("power", "VA");
+        String whole = wholeHousePower();
+        Spinner grid = pointSpinner(powers, l.optString("grid", whole == null ? "" : whole), false);
+        labelled(box, getString(R.string.energy_heater_grid), grid, null);
+        box.addView(ui.note(getString(R.string.energy_heater_grid_help)));
+        EditText power = ui.field("2000", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        if (l.has("power_w")) power.setText(plain(l.opt("power_w")));
+        labelled(box, getString(R.string.energy_heater_power), power, "W");
+        EditText daily = ui.field("120", InputType.TYPE_CLASS_NUMBER);
+        if (l.has("daily_minutes")) daily.setText(plain(l.opt("daily_minutes")));
+        labelled(box, getString(R.string.energy_heater_daily), daily, getString(R.string.energy_minutes_a_day));
+        JSONArray own = l.optJSONArray("offpeak");
+        List<int[]> heldTimes = new ArrayList<>();
+        for (int i = 0; own != null && i < own.length(); i++) {
+            int[] s = stretch(own.optString(i));
+            if (s != null) heldTimes.add(s);
+        }
+        RadioGroup when = new RadioGroup(this);
+        RadioButton contractTimes = new RadioButton(this);
+        contractTimes.setText(R.string.energy_heater_contract_hours);
+        contractTimes.setId(View.generateViewId());
+        RadioButton ownTimes = new RadioButton(this);
+        ownTimes.setText(R.string.energy_heater_own_hours);
+        ownTimes.setId(View.generateViewId());
+        when.addView(contractTimes);
+        when.addView(ownTimes);
+        box.addView(ui.text(getString(R.string.energy_heater_when), 14, Look.INK, true), ui.matchWrap(0, ui.dp(12), 0, ui.dp(4)));
+        box.addView(when);
+        Stretches times = new Stretches(R.string.energy_heater_times, 0, heldTimes.isEmpty() ? Arrays.asList(new int[] {22 * 60, 6 * 60}) : heldTimes);
+        box.addView(times.view);
+        when.setOnCheckedChangeListener((g, id) -> times.view.setVisibility(id == ownTimes.getId() ? View.VISIBLE : View.GONE));
+        when.check(heldTimes.isEmpty() ? contractTimes.getId() : ownTimes.getId());
+        times.view.setVisibility(heldTimes.isEmpty() ? View.GONE : View.VISIBLE);
+
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle(held == null ? getString(R.string.energy_heater_add) : l.optString("name"))
+                .setView(ui.scroll(box))
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(android.R.string.ok, null);
+        if (held != null) b.setNeutralButton(R.string.energy_heater_remove, (d, w) -> { loads.remove(held); fillLoads(); refreshChanged(); });
+        AlertDialog dialog = b.create();
+        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            Double w = decimal(power);
+            if (w == null || w.isNaN() || w <= 0) { power.setError(getString(R.string.energy_required)); return; }
+            if (switches.isEmpty() || powers.isEmpty()) { dialog.dismiss(); return; }
+            String n = name.getText().toString().trim();
+            try {
+                l.put("name", n.isEmpty() ? getString(R.string.energy_heater_name) : n);
+                if (!l.has("id")) {
+                    Set<String> taken = new HashSet<>();
+                    for (JSONObject o : loads) taken.add(o.optString("id"));
+                    l.put("id", freeId(l.optString("name"), taken));
+                }
+                l.put("switch", switches.get(relay.getSelectedItemPosition()).optString("id"));
+                l.put("grid", powers.get(grid.getSelectedItemPosition()).optString("id"));
+                l.put("power_w", w);
+                Double m = decimal(daily);
+                if (m == null || m.isNaN() || m <= 0) l.remove("daily_minutes"); else l.put("daily_minutes", (int) Math.round(m));
+                if (when.getCheckedRadioButtonId() == ownTimes.getId() && !times.list.isEmpty()) l.put("offpeak", times.written());
+                else l.remove("offpeak");
+            } catch (JSONException impossible) { throw new IllegalStateException(impossible); }
+            if (held == null) loads.add(l); else loads.set(loads.indexOf(held), l);
+            fillLoads();
+            refreshChanged();
+            dialog.dismiss();
+        }));
+        dialog.show();
+    }
+
+    /** A choice among points, by their words; the one written chosen (or the first). */
+    private Spinner pointSpinner(List<JSONObject> options, String selected, boolean none) {
+        List<String> words = new ArrayList<>();
+        if (none) words.add(getString(R.string.energy_none));
+        int at = 0;
+        for (int i = 0; i < options.size(); i++) {
+            words.add(pointWords(options.get(i).optString("id")));
+            if (options.get(i).optString("id").equals(selected)) at = i + (none ? 1 : 0);
+        }
+        if (words.isEmpty()) words.add(getString(R.string.energy_none));
+        Spinner s = spinner(words.toArray(new String[0]), at);
+        s.setOnItemSelectedListener(picked);
+        return s;
+    }
+
+    private static String chosen(Spinner s, List<JSONObject> options, boolean none) {
+        int at = s.getSelectedItemPosition() - (none ? 1 : 0);
+        return at < 0 || at >= options.size() ? "" : options.get(at).optString("id");
+    }
+
+    // ---- Other settings: the live gauge, a home battery (folded) ----
+
+    private View others() {
+        LinearLayout card = section(R.string.energy_others, 0);
+        LinearLayout part = ui.column();
+        JSONObject live = saved.optJSONObject("live");
+        JSONObject battery = saved.optJSONObject("battery");
+        part.setVisibility(live != null || battery != null ? View.VISIBLE : View.GONE);
+        Button fold = ui.flat(getString(R.string.energy_others_open));
+        fold.setOnClickListener(v -> part.setVisibility(part.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
+        card.addView(fold, ui.matchWrap(0, ui.dp(6), 0, 0));
+        card.addView(part);
+
+        liveOptions = pointsOf("power", null);
+        liveOn = new CheckBox(this);
+        liveOn.setText(R.string.energy_live_on);
+        liveOn.setTextSize(15);
+        liveOn.setChecked(live != null);
+        part.addView(liveOn, ui.matchWrap(0, ui.dp(12), 0, 0));
+        LinearLayout liveBox = ui.column();
+        String guess = live == null ? "" : live.optString("power");
+        if (guess.isEmpty()) for (JSONObject p : liveOptions) if ("VA".equals(p.optString("unit"))) { guess = p.optString("id"); break; }
+        livePower = pointSpinner(liveOptions, guess, false);
+        labelled(liveBox, getString(R.string.energy_live_power), livePower, null);
+        liveContract = amount("9");
+        if (live != null && live.has("max")) liveContract.setText(plain(live.optDouble("max") / 1000));
+        labelled(liveBox, getString(R.string.energy_live_contract), liveContract, "kVA");
+        liveBox.addView(ui.note(getString(R.string.energy_live_help)));
+        part.addView(liveBox);
+        if (liveOptions.isEmpty() && live == null) { liveOn.setEnabled(false); part.addView(ui.note(getString(R.string.energy_live_none))); }
+        liveOn.setOnCheckedChangeListener((b, on) -> { liveBox.setVisibility(on ? View.VISIBLE : View.GONE); refreshChanged(); });
+        liveBox.setVisibility(liveOn.isChecked() ? View.VISIBLE : View.GONE);
+
+        socOptions = pointsOf("percent", null);
+        batteryPowerOptions = pointsOf("power", "VA");
+        batteryOn = new CheckBox(this);
+        batteryOn.setText(R.string.energy_battery_on);
+        batteryOn.setTextSize(15);
+        batteryOn.setChecked(battery != null);
+        part.addView(batteryOn, ui.matchWrap(0, ui.dp(16), 0, 0));
+        LinearLayout batteryBox = ui.column();
+        batterySoc = pointSpinner(socOptions, battery == null ? "" : battery.optString("soc"), true);
+        labelled(batteryBox, getString(R.string.energy_battery_soc), batterySoc, null);
+        batteryPower = pointSpinner(batteryPowerOptions, battery == null ? "" : battery.optString("power"), true);
+        labelled(batteryBox, getString(R.string.energy_battery_power), batteryPower, null);
+        batteryReversed = new Switch(this);
+        batteryReversed.setText(R.string.energy_battery_reversed);
+        batteryReversed.setChecked(battery != null && battery.optBoolean("discharge_positive"));
+        batteryReversed.setOnCheckedChangeListener((b, on) -> refreshChanged());
+        batteryBox.addView(batteryReversed, ui.matchWrap(0, ui.dp(10), 0, 0));
+        batteryCapacity = amount("10");
+        if (battery != null && battery.has("capacity_kwh")) batteryCapacity.setText(plain(battery.opt("capacity_kwh")));
+        labelled(batteryBox, getString(R.string.energy_battery_capacity), batteryCapacity, "kWh");
+        part.addView(batteryBox);
+        if (socOptions.isEmpty() && battery == null) { batteryOn.setEnabled(false); part.addView(ui.note(getString(R.string.energy_battery_none))); }
+        batteryOn.setOnCheckedChangeListener((b, on) -> { batteryBox.setVisibility(on ? View.VISIBLE : View.GONE); refreshChanged(); });
+        batteryBox.setVisibility(batteryOn.isChecked() ? View.VISIBLE : View.GONE);
+        return card;
+    }
+
+    // ---- The draft: what would be written ----
+
+    /** A value the screen cannot write: its field says why. */
+    static final class Invalid extends Exception {
+        private static final long serialVersionUID = 1L;
+        Invalid() { super(null, null, false, false); }
+    }
+
+    /** A typed number (a comma accepted); null when empty, NaN when unreadable. */
+    static Double decimal(EditText e) {
+        String t = e.getText().toString().trim().replace(',', '.');
+        if (t.isEmpty()) return null;
+        try { return Double.parseDouble(t); } catch (NumberFormatException bad) { return Double.NaN; }
+    }
+
+    private Double amountOf(EditText e, boolean needed, boolean show) throws Invalid {
+        Double v = decimal(e);
+        if ((v == null && needed) || (v != null && (v.isNaN() || v < 0))) {
+            if (show) { e.setError(getString(v == null ? R.string.energy_required : R.string.energy_number_invalid)); e.requestFocus(); }
+            throw new Invalid();
+        }
+        return v;
+    }
+
+    static void set(JSONObject o, String key, Object value) throws JSONException {
+        if (value == null || "".equals(value) || Boolean.FALSE.equals(value)) o.remove(key); else o.put(key, value);
+    }
+
+    /** The `[energy]` section the screen says, from what is written (keys it does not show kept). */
+    private JSONObject draft(boolean show) throws Invalid, JSONException {
+        JSONObject next = copy(saved);
+        assignIds();
+        JSONArray meters = new JSONArray();
+        for (Row r : rows) {
+            r.pending = null;
+            if (!r.box.isChecked()) continue;
+            JSONObject m = copy(r.meter);
+            if (!m.has("id")) m.put("id", r.newId);
+            String kind = kindOf(r);
+            JSONObject p = pointById.get(r.point);
+            boolean power = p != null ? "power".equals(p.optString("family")) : m.optBoolean("integrate");
+            m.put("name", r.name);
+            m.put("role", kind);
+            m.put("point", r.point);
+            set(m, "integrate", power);
+            if (power || !"appliance".equals(kind)) m.remove("estimate");
+            int w = r.withinChoice.getSelectedItemPosition();
+            set(m, "within", "appliance".equals(kind) && w > 0 && w < r.withinIds.size() ? r.withinIds.get(w) : null);
+            boolean unpriced = "solar".equals(kind) || "charge".equals(kind) || "discharge".equals(kind);
+            set(m, "price", unpriced ? null : r.price);
+            if (unpriced) { m.remove("price_point"); m.remove("price_extra"); }
+            r.pending = m;
+            meters.put(m);
+        }
+        set(next, "meter", meters.length() == 0 ? null : meters);
+        JSONArray driven = new JSONArray();
+        for (JSONObject l : loads) driven.put(l);
+        set(next, "load", driven.length() == 0 ? null : driven);
+
+        set(next, "monthly_fee", amountOf(fee, false, show));
+        if (peakHours) {
+            JSONObject tariff = copy(saved.optJSONObject("tariff"));
+            JSONObject prices = copy(tariff.optJSONObject("prices"));
+            prices.put(PEAK, amountOf(peakPrice, true, show));
+            prices.put(OFF_PEAK, amountOf(offPeakPrice, true, show));
+            tariff.put("prices", prices);
+            if (followLinky.isChecked() && linkyPeriod != null) tariff.put("period", linkyPeriod);
+            else {
+                // Moli follows the hours below (energy.rs fills the period in).
+                tariff.remove("period");
+                if (contractHours.list.isEmpty()) {
+                    if (show) banner(getString(R.string.energy_hours_needed), Look.BAD);
+                    throw new Invalid();
+                }
+            }
+            next.put("tariff", tariff);
+        } else {
+            next.remove("tariff");
+            amountOf(singlePrice, false, show);
+        }
+
+        // Without Moli's points, what is written stays as it is.
+        if (liveOn.isChecked() && liveOptions.isEmpty()) { /* kept */ }
+        else if (liveOn.isChecked()) {
+            JSONObject live = copy(saved.optJSONObject("live"));
+            live.put("power", chosen(livePower, liveOptions, false));
+            double max = amountOf(liveContract, true, show) * 1000;
+            live.put("max", max);
+            if (live.optDouble("warn", 0) > max) live.remove("warn");
+            next.put("live", live);
+        } else next.remove("live");
+
+        if (batteryOn.isChecked() && socOptions.isEmpty() && batteryPowerOptions.isEmpty()) { /* kept */ }
+        else if (batteryOn.isChecked()) {
+            JSONObject b = copy(saved.optJSONObject("battery"));
+            set(b, "soc", chosen(batterySoc, socOptions, true));
+            set(b, "power", chosen(batteryPower, batteryPowerOptions, true));
+            set(b, "discharge_positive", batteryReversed.isChecked());
+            set(b, "capacity_kwh", amountOf(batteryCapacity, false, show));
+            if (!b.has("soc") && !b.has("power")) {
+                if (show) banner(getString(R.string.energy_battery_needed), Look.BAD);
+                throw new Invalid();
+            }
+            next.put("battery", b);
+        } else next.remove("battery");
+
+        // Moli keeps a single price under [energy]: the section must exist.
+        if (next.length() == 0 && !peakHours && decimal(singlePrice) != null) next.put("currency", "€");
+        return next;
+    }
+
+    /** The off-peak hours to write: the contract's, or none (taken out). */
+    private JSONArray draftHours() {
+        if (!peakHours || (followLinky.isChecked() && linkyPeriod != null)) return new JSONArray();
+        return contractHours.written();
+    }
+
+    /** The single price to give Moli, if it changed (null: nothing to do). */
+    private Double draftPrice() {
+        if (peakHours) return null;
+        Double p = decimal(singlePrice);
+        if (p == null || p.isNaN() || p <= 0) return null;
+        return housePrice != null && Math.abs(housePrice - p) < 1e-9 ? null : p;
+    }
+
+    /** What would be written in moli.toml, and in all (with the single price); null if incomplete. */
+    private String written() {
+        try { return draft(false).toString() + draftHours(); } catch (Invalid | JSONException incomplete) { return null; }
+    }
+
+    private String signature() {
+        String w = written();
+        return w == null ? null : w + draftPrice();
+    }
+
+    /** The draft as written is the new reference. */
+    private void settle() {
+        baselineWritten = written() == null ? "" : written();
+        baseline = signature() == null ? "" : signature();
+    }
+
+    private void refreshChanged() {
+        if (!ready || save == null) return;
+        String now = signature();
+        boolean changed = now == null || !now.equals(baseline);
+        save.setEnabled(changed && !busy);
+        save.setAlpha(changed ? 1f : 0.45f);
+        unsaved.setVisibility(changed ? View.VISIBLE : View.GONE);
+        boolean possible = !pointsOf("switch", null).isEmpty() && wholeHousePower() != null;
+        if (possible != heaterPossible || loadsBox.getChildCount() == 0) { heaterPossible = possible; fillLoads(); }
+    }
+
+    // ---- Seeing, saving ----
+
+    private void banner(String text, int color) {
+        banner.setText(text);
+        banner.setBackground(ui.round(color, 10));
         banner.setVisibility(View.VISIBLE);
-        if (form != null) form.lock(true);
+    }
+
+    /** « Voir ce qui sera écrit »: the part of moli.toml now, and after « Enregistrer ». */
+    private void showPreview() {
+        JSONObject section;
+        try { section = draft(true); } catch (Invalid shown) { return; } catch (JSONException impossible) { throw new IllegalStateException(impossible); }
+        JSONArray hours = draftHours();
+        Double price = draftPrice();
         work.execute(() -> {
-            String refused;
-            try { refused = Setup.energyPut(this, section, hours); } catch (Exception failure) { refused = String.valueOf(failure.getMessage()); }
+            JSONObject seen;
+            try { seen = Setup.energyPreview(this, section, hours); } catch (Exception failure) { seen = null; }
+            JSONObject shown = seen;
+            handler.post(() -> {
+                if (isDestroyed()) return;
+                LinearLayout box = ui.column();
+                box.setPadding(ui.dp(20), ui.dp(8), ui.dp(20), ui.dp(8));
+                if (shown == null) box.addView(ui.note(getString(R.string.energy_preview_failed)));
+                else {
+                    box.addView(ui.text(getString(R.string.energy_preview_before), 14, Look.INK, true));
+                    box.addView(code(shown.optString("before")));
+                    box.addView(ui.text(getString(R.string.energy_preview_after), 14, Look.INK, true), ui.matchWrap(0, ui.dp(14), 0, 0));
+                    if (!shown.isNull("error")) box.addView(ui.text(getString(R.string.energy_preview_refused, shown.optString("error")), 14, Look.BAD, false));
+                    else box.addView(code(shown.optString("after")));
+                    if (price != null) box.addView(ui.note(getString(R.string.energy_preview_price, plain(price))));
+                }
+                new AlertDialog.Builder(this)
+                        .setTitle(R.string.energy_preview)
+                        .setView(ui.scroll(box))
+                        .setPositiveButton(android.R.string.ok, null)
+                        .show();
+            });
+        });
+    }
+
+    private TextView code(String text) {
+        TextView t = ui.text(text.trim().isEmpty() ? getString(R.string.energy_preview_nothing) : text.trim(), 12, Look.INK, false);
+        t.setTypeface(Typeface.MONOSPACE);
+        t.setTextIsSelectable(true);
+        t.setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(8));
+        t.setBackground(ui.round(Look.PAGE, 8));
+        return t;
+    }
+
+    /** One check by Moli, one restart; the page stays as it is. `after`: once saved. */
+    private void saveAll(Runnable after) {
+        if (busy) return;
+        JSONObject section;
+        try { section = draft(true); } catch (Invalid shown) { return; } catch (JSONException impossible) { throw new IllegalStateException(impossible); }
+        JSONArray hours = draftHours();
+        Double price = draftPrice();
+        boolean write = !(section.toString() + hours).equals(baselineWritten);
+        busy = true;
+        save.setEnabled(false);
+        banner(getString(write ? R.string.setup_restarting : R.string.energy_saving), Look.INFO);
+        work.execute(() -> {
+            String refused = null;
+            try {
+                if (write) refused = Setup.energyPut(this, section, hours);
+                if (refused == null && price != null) refused = Setup.energyPrice(this, price);
+            } catch (Exception failure) { refused = String.valueOf(failure.getMessage()); }
+            JSONObject read = null;
+            if (refused == null) try { read = Setup.energy(this); } catch (Exception silent) { /* the screen's draft stands */ }
             String why = refused;
+            JSONObject now = read;
             handler.post(() -> {
                 busy = false;
                 if (isDestroyed()) return;
                 if (why == null) {
-                    banner.setText(R.string.setup_done);
-                    banner.setBackground(ui.round(Look.OK, 10));
-                    handler.postDelayed(() -> banner.setVisibility(View.GONE), 4000);
-                    load();
+                    if (now != null) take(now);
+                    else { saved = section; savedHours = hours; }
+                    if (price != null) housePrice = price;
+                    for (Row r : rows) r.meter = r.box.isChecked() ? r.pending : null;
+                    settle();
+                    refreshChanged();
+                    banner(getString(R.string.energy_saved), Look.OK);
+                    handler.postDelayed(() -> { if (!busy) banner.setVisibility(View.GONE); }, 5000);
+                    if (after != null) after.run();
                 } else {
                     banner.setVisibility(View.GONE);
-                    if (form != null) form.lock(false);
+                    refreshChanged();
                     new AlertDialog.Builder(this)
                             .setTitle(R.string.setup_refused)
-                            .setMessage(why)
+                            .setMessage(getString(R.string.energy_refused_kept, why))
                             .setPositiveButton(android.R.string.ok, null)
                             .show();
                 }
@@ -443,606 +1139,17 @@ public final class EnergyActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
-        if (form != null && !busy) closeForm(); else super.onBackPressed();
+        if (busy) return;
+        String now = ready ? signature() : baseline;
+        if (now != null && now.equals(baseline)) { super.onBackPressed(); return; }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.energy_unsaved)
+                .setMessage(R.string.energy_unsaved_question)
+                .setPositiveButton(R.string.energy_save, (d, w) -> saveAll(this::finish))
+                .setNegativeButton(R.string.energy_discard, (d, w) -> finish())
+                .setNeutralButton(android.R.string.cancel, null)
+                .show();
     }
 
-    @Override protected void onDestroy() { handler.removeCallbacks(again); work.shutdown(); super.onDestroy(); }
-
-    // ---- Choosing a point ----
-
-    /**
-     * The house's points of these families (`power`, `energy`, `percent`,
-     * `switch`, `number`, `text`), searchable; « all the points » for the
-     * rest; `families` null: one line per device (what a meter feeds).
-     * Without Moli, the point is typed.
-     */
-    void pick(String[] families, Consumer<JSONObject> chosen) {
-        if (points == null || points.length() == 0) {
-            Toast.makeText(this, R.string.energy_no_points, Toast.LENGTH_LONG).show();
-            return;
-        }
-        List<String> wanted = families == null ? new ArrayList<>() : Arrays.asList(families);
-        boolean devices = families == null;
-        LinearLayout box = ui.column();
-        box.setPadding(ui.dp(16), ui.dp(8), ui.dp(16), 0);
-        EditText search = ui.field(getString(R.string.energy_search), InputType.TYPE_CLASS_TEXT);
-        box.addView(search, ui.matchWrap(0, 0, 0, ui.dp(6)));
-        CheckBox every = new CheckBox(this);
-        every.setText(R.string.energy_all_points);
-        if (!devices) box.addView(every);
-        ListView view = new ListView(this);
-        box.addView(view, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(360)));
-        List<JSONObject> shown = new ArrayList<>();
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, new ArrayList<>());
-        view.setAdapter(adapter);
-        Runnable fill = () -> {
-            shown.clear();
-            adapter.clear();
-            String q = search.getText().toString().toLowerCase(Locale.ROOT).trim();
-            Set<String> seen = new HashSet<>();
-            for (int i = 0; i < points.length(); i++) {
-                JSONObject p = points.optJSONObject(i);
-                if (devices ? !seen.add(p.optString("device")) : !every.isChecked() && !wanted.contains(p.optString("family"))) continue;
-                String words = devices ? p.optString("name") + " (" + p.optString("device") + ")" : pointWords(p.optString("id"));
-                if (!q.isEmpty() && !(words + " " + p.optString("id")).toLowerCase(Locale.ROOT).contains(q)) continue;
-                shown.add(p);
-                adapter.add(words);
-            }
-            adapter.notifyDataSetChanged();
-        };
-        fill.run();
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(R.string.energy_pick)
-                .setView(box)
-                .setNegativeButton(android.R.string.cancel, null)
-                .create();
-        search.addTextChangedListener(new TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
-            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
-            @Override public void afterTextChanged(Editable s) { fill.run(); }
-        });
-        every.setOnCheckedChangeListener((b, on) -> fill.run());
-        view.setOnItemClickListener((parent, v, position, id) -> {
-            chosen.accept(shown.get(position));
-            dialog.dismiss();
-        });
-        dialog.show();
-    }
-
-    // ---- Forms ----
-
-    /** A value the form cannot save: its field says why. */
-    static final class Invalid extends Exception {
-        Invalid() { super(null, null, false, false); }
-    }
-
-    /** One form: its fields, built in `fill`, read back in `section`. */
-    abstract class Form {
-        final List<View> controls = new ArrayList<>();
-        LinearLayout panel;
-        /** The off-peak hours to write (null: left as they are). */
-        JSONArray hours;
-
-        abstract String title();
-
-        abstract void fill();
-
-        /** The new section, or Invalid (the field says why). */
-        abstract JSONObject section() throws Invalid, JSONException;
-
-        /** The section without this item; null: nothing to remove. */
-        JSONObject without() { return null; }
-
-        void show() {
-            LinearLayout top = ui.row();
-            top.addView(ui.heading(title()), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-            Button close = ui.flat("✕");
-            close.setOnClickListener(v -> closeForm());
-            top.addView(close, new LinearLayout.LayoutParams(ui.dp(48), ui.dp(44)));
-            side.addView(top);
-            panel = ui.card();
-            side.addView(panel);
-            fill();
-            LinearLayout actions = ui.row();
-            Button save = ui.primary(getString(R.string.setup_save));
-            save.setOnClickListener(v -> {
-                try { JSONObject next = section(); apply(next, hours); } catch (Invalid shownOnField) { /* the field says why */ } catch (JSONException impossible) { throw new IllegalStateException(impossible); }
-            });
-            actions.addView(save, ui.share(0));
-            controls.add(save);
-            JSONObject rest = without();
-            if (rest != null) {
-                Button remove = ui.danger(getString(R.string.setup_remove));
-                remove.setOnClickListener(v -> apply(rest));
-                actions.addView(remove, ui.share(ui.dp(12)));
-                controls.add(remove);
-            }
-            panel.addView(actions, ui.matchWrap(0, ui.dp(18), 0, 0));
-        }
-
-        void lock(boolean on) { for (View v : controls) v.setEnabled(!on); }
-
-        /** A box for one field (label, the field, its help), shown or hidden as a whole. */
-        LinearLayout box(LinearLayout into, String label, String help, View field) {
-            LinearLayout b = ui.column();
-            if (label != null) b.addView(ui.text(label, 14, Look.INK, true), ui.matchWrap(0, ui.dp(12), 0, ui.dp(4)));
-            b.addView(field, ui.matchWrap(0, label == null ? ui.dp(10) : 0, 0, 0));
-            if (help != null) b.addView(ui.text(help, 12, Look.MUTED, false), ui.matchWrap(0, ui.dp(3), 0, 0));
-            into.addView(b);
-            controls.add(field);
-            return b;
-        }
-
-        EditText words(LinearLayout into, int label, int help, String value, String hint) {
-            EditText e = ui.field(hint, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-            e.setText(value);
-            box(into, getString(label), help == 0 ? null : getString(help), e);
-            return e;
-        }
-
-        EditText decimal(LinearLayout into, int label, int help, Object value, String hint) {
-            EditText e = ui.field(hint, InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-            String now = plain(value);
-            e.setText(now == null ? "" : now);
-            box(into, getString(label), help == 0 ? null : getString(help), e);
-            return e;
-        }
-
-        Switch toggle(LinearLayout into, int label, int help, boolean on) {
-            Switch s = new Switch(EnergyActivity.this);
-            s.setText(label);
-            s.setTextSize(15);
-            s.setTextColor(Look.INK);
-            s.setChecked(on);
-            box(into, null, help == 0 ? null : getString(help), s);
-            return s;
-        }
-
-        /** A point: typed, or chosen among the house's; its words under it. */
-        EditText point(LinearLayout into, int label, int help, String value, String[] families, Consumer<JSONObject> chosen) {
-            LinearLayout line = ui.row();
-            EditText e = ui.field(getString(R.string.energy_point_hint), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-            e.setTypeface(Typeface.MONOSPACE);
-            e.setTextSize(14);
-            e.setText(value);
-            line.addView(e, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-            Button choose = ui.flat(getString(R.string.energy_choose));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ui.dp(48));
-            lp.setMargins(ui.dp(8), 0, 0, 0);
-            line.addView(choose, lp);
-            controls.add(choose);
-            TextView said = ui.text("", 12, Look.ACCENT, false);
-            Runnable say = () -> {
-                String id = e.getText().toString().trim();
-                said.setText(pointById.containsKey(id) ? pointWords(id) : "");
-                said.setVisibility(said.getText().length() == 0 ? View.GONE : View.VISIBLE);
-            };
-            say.run();
-            e.addTextChangedListener(new TextWatcher() {
-                @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
-                @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
-                @Override public void afterTextChanged(Editable s) { say.run(); }
-            });
-            choose.setOnClickListener(v -> pick(families, p -> {
-                e.setText(p.optString("id"));
-                e.setError(null);
-                if (chosen != null) chosen.accept(p);
-            }));
-            LinearLayout b = box(into, getString(label), help == 0 ? null : getString(help), line);
-            controls.add(e);
-            b.addView(said, 2, ui.matchWrap(0, ui.dp(3), 0, 0));
-            return e;
-        }
-
-        Spinner choice(LinearLayout into, int label, int help, String[] shown, int selected) {
-            Spinner s = new Spinner(EnergyActivity.this);
-            ArrayAdapter<String> a = new ArrayAdapter<>(EnergyActivity.this, android.R.layout.simple_spinner_dropdown_item, shown);
-            s.setAdapter(a);
-            s.setSelection(Math.max(0, selected));
-            box(into, getString(label), help == 0 ? null : getString(help), s);
-            return s;
-        }
-
-        /** A collapsed part, open if something in it is set. */
-        LinearLayout more(boolean open) {
-            LinearLayout part = ui.column();
-            part.setVisibility(open ? View.VISIBLE : View.GONE);
-            Button toggle = ui.flat(getString(R.string.setup_advanced));
-            toggle.setOnClickListener(v -> part.setVisibility(part.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
-            panel.addView(toggle, ui.matchWrap(0, ui.dp(14), 0, 0));
-            panel.addView(part);
-            controls.add(toggle);
-            return part;
-        }
-
-        // Reading the fields back.
-
-        String text(EditText e) { return e.getText().toString().trim(); }
-
-        String required(EditText e) throws Invalid {
-            String t = text(e);
-            if (t.isEmpty()) { e.setError(getString(R.string.energy_required)); e.requestFocus(); throw new Invalid(); }
-            return t;
-        }
-
-        /** A point id as the official check wants it (`instance:device/key`), or empty. */
-        String pointOf(EditText e, boolean needed) throws Invalid {
-            String t = needed ? required(e) : text(e);
-            if (!t.isEmpty() && !t.matches("[^:/\\s]+:[^/\\s]+/\\S+")) { e.setError(getString(R.string.energy_point_invalid)); e.requestFocus(); throw new Invalid(); }
-            return t;
-        }
-
-        Double decimalOf(EditText e) throws Invalid {
-            String t = text(e).replace(',', '.');
-            if (t.isEmpty()) return null;
-            try { return Double.parseDouble(t); } catch (NumberFormatException bad) { e.setError(getString(R.string.energy_number_invalid)); e.requestFocus(); throw new Invalid(); }
-        }
-
-        Integer wholeOf(EditText e) throws Invalid {
-            String t = text(e);
-            if (t.isEmpty()) return null;
-            try { return Integer.parseInt(t); } catch (NumberFormatException bad) { e.setError(getString(R.string.energy_whole_invalid)); e.requestFocus(); throw new Invalid(); }
-        }
-
-        /** Sets `key` (null or empty: taken out). */
-        void set(JSONObject o, String key, Object value) throws JSONException {
-            if (value == null || "".equals(value) || Boolean.FALSE.equals(value)) o.remove(key); else o.put(key, value);
-        }
-
-        /** A field's box the role leaves shown (a folded « more » part still counts). */
-        boolean on(View box) { return box.getVisibility() == View.VISIBLE; }
-    }
-
-    /** One meter (`[[energy.meter]]`): its fields by its role. */
-    final class MeterForm extends Form {
-        final int index;
-        final JSONObject meter;
-        EditText name, point, power, price, pricePoint, priceExtra, period, kwhPerUnit, feeds;
-        Spinner role, within;
-        Switch integrate, never, estimate, history;
-        LinearLayout withinBox, estimateBox, integrateBox, powerBox, neverBox, priceBox, pricePointBox, priceExtraBox, periodBox, historyBox, kwhBox;
-        final List<String> circuits = new ArrayList<>();
-
-        MeterForm(int index, JSONObject meter) {
-            this.index = index;
-            this.meter = copy(meter);
-        }
-
-        @Override String title() { return index < 0 ? getString(R.string.energy_meter_new) : meter.optString("name"); }
-
-        @Override void fill() {
-            if (index >= 0) panel.addView(ui.note(getString(R.string.energy_id_fixed, meter.optString("id"))));
-            name = words(panel, R.string.energy_name, 0, meter.optString("name"), getString(R.string.energy_name_hint));
-            String[] roles = new String[ROLES.length];
-            for (int i = 0; i < ROLES.length; i++) roles[i] = roleWords(ROLES[i]);
-            role = choice(panel, R.string.energy_role, 0, roles, Arrays.asList(ROLES).indexOf(meter.optString("role", "appliance")));
-            point = point(panel, R.string.energy_point, R.string.energy_point_help, meter.optString("point"),
-                    new String[] {"power", "energy"}, p -> {
-                        // A power is added up by Moli; a counter is read as it is.
-                        integrate.setChecked("power".equals(p.optString("family")));
-                        if (text(name).isEmpty()) name.setText(p.optString("name"));
-                    });
-            integrateBox = box(panel, null, getString(R.string.energy_integrate_help), integrate = toggle0(R.string.energy_integrate, meter.optBoolean("integrate")));
-
-            circuits.add("");
-            List<String> inside = new ArrayList<>();
-            inside.add(getString(R.string.energy_within_none));
-            JSONArray all = array("meter");
-            for (int i = 0; i < all.length(); i++) {
-                JSONObject m = all.optJSONObject(i);
-                if (i == index || !("circuit".equals(m.optString("role")) || "total".equals(m.optString("role")))) continue;
-                circuits.add(m.optString("id"));
-                inside.add(m.optString("name"));
-            }
-            within = choice(panel, R.string.energy_within, R.string.energy_within_help, inside.toArray(new String[0]), circuits.indexOf(meter.optString("within")));
-            withinBox = (LinearLayout) within.getParent();
-            estimateBox = box(panel, null, getString(R.string.energy_estimate_help), estimate = toggle0(R.string.energy_estimate, meter.optBoolean("estimate")));
-            price = decimal(panel, R.string.energy_price, R.string.energy_price_help, meter.opt("price"), "0.2016");
-            priceBox = (LinearLayout) price.getParent();
-
-            boolean advanced = meter.has("power") || meter.has("reset") || meter.has("period") || meter.has("price_point")
-                    || meter.has("kwh_per_unit") || meter.has("history") || meter.has("feeds");
-            LinearLayout part = more(advanced);
-            power = point(part, R.string.energy_power, R.string.energy_power_help, meter.optString("power"), new String[] {"power"}, null);
-            powerBox = parentBox(power);
-            neverBox = box(part, null, getString(R.string.energy_never_help), never = toggle0(R.string.energy_never, "never".equals(meter.optString("reset"))));
-            pricePoint = point(part, R.string.energy_price_point, R.string.energy_price_point_help, meter.optString("price_point"), new String[] {"number"}, null);
-            pricePointBox = parentBox(pricePoint);
-            priceExtra = decimal(part, R.string.energy_price_extra, R.string.energy_price_extra_help, meter.opt("price_extra"), "0.05");
-            priceExtraBox = (LinearLayout) priceExtra.getParent();
-            period = words(part, R.string.energy_period, R.string.energy_period_help, meter.optString("period"), "HC");
-            periodBox = (LinearLayout) period.getParent();
-            kwhPerUnit = decimal(part, R.string.energy_kwh_per_unit, R.string.energy_kwh_per_unit_help, meter.opt("kwh_per_unit"), "11.4");
-            kwhBox = (LinearLayout) kwhPerUnit.getParent();
-            historyBox = box(part, null, getString(R.string.energy_history_help), history = toggle0(R.string.energy_history, meter.optBoolean("history")));
-            JSONArray fed = meter.optJSONArray("feeds");
-            List<String> devices = new ArrayList<>();
-            for (int i = 0; fed != null && i < fed.length(); i++) devices.add(fed.optString(i));
-            feeds = words(part, R.string.energy_feeds, R.string.energy_feeds_help, String.join(", ", devices), "daikin:salon");
-            Button addFeed = ui.flat(getString(R.string.energy_feeds_add));
-            addFeed.setOnClickListener(v -> pick(null, p -> {
-                String now = text(feeds);
-                feeds.setText(now.isEmpty() ? p.optString("device") : now + ", " + p.optString("device"));
-            }));
-            part.addView(addFeed, ui.matchWrap(0, ui.dp(6), 0, 0));
-            controls.add(addFeed);
-
-            role.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-                @Override public void onItemSelected(AdapterView<?> parent, View v, int position, long id) { follow(); }
-                @Override public void onNothingSelected(AdapterView<?> parent) {}
-            });
-            integrate.setOnCheckedChangeListener((b, on) -> follow());
-            estimate.setOnCheckedChangeListener((b, on) -> follow());
-            follow();
-        }
-
-        /** A switch not yet in a box (the box is made by the caller). */
-        private Switch toggle0(int label, boolean on) {
-            Switch s = new Switch(EnergyActivity.this);
-            s.setText(label);
-            s.setTextSize(15);
-            s.setTextColor(Look.INK);
-            s.setChecked(on);
-            return s;
-        }
-
-        /** The box of a point field (its line is inside it). */
-        private LinearLayout parentBox(EditText e) { return (LinearLayout) e.getParent().getParent(); }
-
-        private String chosenRole() { return ROLES[Math.max(0, role.getSelectedItemPosition())]; }
-
-        /** What each role takes (moli-energy `MeterConfig::check`). */
-        private void follow() {
-            String r = chosenRole();
-            boolean appliance = "appliance".equals(r);
-            boolean unpriced = "solar".equals(r) || "charge".equals(r) || "discharge".equals(r);
-            boolean consumes = !(unpriced || "export".equals(r) || "gas".equals(r));
-            boolean estimated = appliance && estimate.isChecked();
-            boolean adds = integrate.isChecked() && !estimated;
-            show(withinBox, appliance && circuits.size() > 1);
-            show(estimateBox, appliance);
-            show(integrateBox, !estimated);
-            show(powerBox, !adds && !estimated);
-            show(neverBox, !adds && !estimated);
-            show(priceBox, !unpriced);
-            show(pricePointBox, !unpriced);
-            show(priceExtraBox, !unpriced);
-            show(periodBox, consumes);
-            show(kwhBox, !adds && !estimated);
-            show(historyBox, (consumes || "gas".equals(r)) && !adds && !estimated);
-        }
-
-        private void show(View v, boolean on) { v.setVisibility(on ? View.VISIBLE : View.GONE); }
-
-        @Override JSONObject section() throws Invalid, JSONException {
-            JSONObject m = copy(meter);
-            String n = required(name);
-            m.put("name", n);
-            if (index < 0) m.put("id", freeId("meter", n));
-            m.put("role", chosenRole());
-            m.put("point", pointOf(point, true));
-            set(m, "integrate", on(integrateBox) && integrate.isChecked());
-            set(m, "within", on(withinBox) ? circuits.get(Math.max(0, within.getSelectedItemPosition())) : null);
-            set(m, "estimate", on(estimateBox) && estimate.isChecked());
-            set(m, "price", on(priceBox) ? decimalOf(price) : null);
-            set(m, "power", on(powerBox) ? pointOf(power, false) : null);
-            set(m, "reset", on(neverBox) && never.isChecked() ? "never" : null);
-            set(m, "price_point", on(pricePointBox) ? pointOf(pricePoint, false) : null);
-            set(m, "price_extra", on(priceExtraBox) ? decimalOf(priceExtra) : null);
-            set(m, "period", on(periodBox) ? text(period) : null);
-            set(m, "kwh_per_unit", on(kwhBox) ? decimalOf(kwhPerUnit) : null);
-            set(m, "history", on(historyBox) && history.isChecked());
-            JSONArray devices = new JSONArray();
-            for (String d : text(feeds).split("[,\\s]+")) if (!d.isEmpty()) devices.put(d);
-            set(m, "feeds", devices.length() == 0 ? null : devices);
-            return withEntry("meter", index, m);
-        }
-
-        @Override JSONObject without() { return index < 0 ? null : withEntry("meter", index, null); }
-    }
-
-    /** One driven load (`[[energy.load]]`): a water heater on a relay. */
-    final class LoadForm extends Form {
-        final int index;
-        final JSONObject load;
-        EditText name, relay, grid, power, offpeak, daily, minOn, minOff;
-
-        LoadForm(int index, JSONObject load) {
-            this.index = index;
-            this.load = copy(load);
-        }
-
-        @Override String title() { return index < 0 ? getString(R.string.energy_load_new) : load.optString("name"); }
-
-        @Override void fill() {
-            panel.addView(ui.text(getString(R.string.energy_load_about), 14, Look.INK, false));
-            if (index >= 0) panel.addView(ui.note(getString(R.string.energy_id_fixed, load.optString("id"))));
-            name = words(panel, R.string.energy_name, 0, load.optString("name"), getString(R.string.energy_load_name_hint));
-            relay = point(panel, R.string.energy_load_switch, R.string.energy_load_switch_help, load.optString("switch"), new String[] {"switch"},
-                    p -> { if (text(name).isEmpty()) name.setText(p.optString("name")); });
-            grid = point(panel, R.string.energy_load_grid, R.string.energy_load_grid_help, load.optString("grid"), new String[] {"power"}, null);
-            power = decimal(panel, R.string.energy_load_power, 0, load.opt("power_w"), "2400");
-            JSONArray stretches = load.optJSONArray("offpeak");
-            List<String> each = new ArrayList<>();
-            for (int i = 0; stretches != null && i < stretches.length(); i++) each.add(stretches.optString(i));
-            offpeak = words(panel, R.string.energy_load_offpeak, R.string.energy_load_offpeak_help, String.join(", ", each), "22:00-06:00");
-            daily = whole(panel, R.string.energy_load_daily, R.string.energy_load_daily_help, load.opt("daily_minutes"), "120");
-            minOn = whole(panel, R.string.energy_load_min_on, 0, load.opt("min_on_minutes"), "10");
-            minOff = whole(panel, R.string.energy_load_min_off, 0, load.opt("min_off_minutes"), "10");
-        }
-
-        private EditText whole(LinearLayout into, int label, int help, Object value, String hint) {
-            EditText e = ui.field(hint, InputType.TYPE_CLASS_NUMBER);
-            String now = plain(value);
-            e.setText(now == null ? "" : now);
-            box(into, getString(label), help == 0 ? null : getString(help), e);
-            return e;
-        }
-
-        @Override JSONObject section() throws Invalid, JSONException {
-            JSONObject l = copy(load);
-            String n = required(name);
-            l.put("name", n);
-            if (index < 0) l.put("id", freeId("load", n));
-            l.put("switch", pointOf(relay, true));
-            l.put("grid", pointOf(grid, true));
-            Double w = decimalOf(power);
-            if (w == null) { required(power); }
-            l.put("power_w", w);
-            JSONArray stretches = new JSONArray();
-            for (String s : text(offpeak).split("[,;\\s]+")) if (!s.isEmpty()) stretches.put(s);
-            set(l, "offpeak", stretches.length() == 0 ? null : stretches);
-            set(l, "daily_minutes", wholeOf(daily));
-            set(l, "min_on_minutes", wholeOf(minOn));
-            set(l, "min_off_minutes", wholeOf(minOff));
-            return withEntry("load", index, l);
-        }
-
-        @Override JSONObject without() { return index < 0 ? null : withEntry("load", index, null); }
-    }
-
-    /**
-     * The bill: subscription, budget, the price of peak and off-peak hours
-     * and the off-peak hours of the contract (a block `heures-creuses` the
-     * tariff follows), or the period a Linky reader gives; other periods
-     * (Tempo), currency, the most a meter draws.
-     */
-    final class BillForm extends Form {
-        EditText fee, budget, peak, offPeak, stretches, periodPoint, others, currency, maxPower;
-
-        @Override String title() { return getString(R.string.energy_bill); }
-
-        @Override void fill() {
-            fee = decimal(panel, R.string.energy_fee, R.string.energy_fee_help, energy.opt("monthly_fee"), "19.56");
-            budget = point(panel, R.string.energy_budget, R.string.energy_budget_help, energy.optString("budget"), new String[] {"number"}, null);
-            JSONObject tariff = energy.optJSONObject("tariff");
-            JSONObject each = tariff == null ? new JSONObject() : tariff.optJSONObject("prices");
-            if (each == null) each = new JSONObject();
-            panel.addView(ui.title(getString(R.string.energy_tariff)), ui.matchWrap(0, ui.dp(18), 0, 0));
-            panel.addView(ui.note(getString(R.string.energy_tariff_help)));
-            peak = decimal(panel, R.string.energy_price_peak, 0, each.opt(PEAK), "0.2081");
-            offPeak = decimal(panel, R.string.energy_price_off_peak, 0, each.opt(OFF_PEAK), "0.1635");
-            List<String> held = new ArrayList<>();
-            for (int i = 0; i < offpeak.length(); i++) held.add(offpeak.optString(i));
-            stretches = words(panel, R.string.energy_off_peak_hours, R.string.energy_off_peak_hours_help, String.join(", ", held), "22:00-06:00");
-            // A period the hours give is theirs; another one is a meter's (Linky).
-            String period = tariff == null ? "" : tariff.optString("period");
-            if (period.equals(offpeakPoint)) period = "";
-            StringBuilder lines = new StringBuilder();
-            for (java.util.Iterator<String> k = each.keys(); k.hasNext(); ) {
-                String name = k.next();
-                if (name.equals(PEAK) || name.equals(OFF_PEAK)) continue;
-                if (lines.length() > 0) lines.append('\n');
-                lines.append(name).append(" = ").append(plain(each.opt(name)));
-            }
-            LinearLayout part = more(!period.isEmpty() || lines.length() > 0 || energy.has("currency") || energy.has("max_power_kw"));
-            periodPoint = point(part, R.string.energy_tariff_period, R.string.energy_tariff_period_help, period, new String[] {"text"}, null);
-            others = ui.field("BLEU_HP = 0.1609", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-            others.setMinLines(2);
-            others.setGravity(Gravity.TOP);
-            others.setText(lines);
-            box(part, getString(R.string.energy_tariff_prices), getString(R.string.energy_tariff_prices_help), others);
-            currency = words(part, R.string.energy_currency, 0, energy.optString("currency"), "€");
-            maxPower = decimal(part, R.string.energy_max_power, R.string.energy_max_power_help, energy.opt("max_power_kw"), "36");
-            panel.addView(ui.note(getString(R.string.energy_price_elsewhere)), ui.matchWrap(0, ui.dp(12), 0, 0));
-            Button page = ui.flat(getString(R.string.energy_open_page));
-            page.setOnClickListener(v -> openDashboard());
-            panel.addView(page);
-        }
-
-        @Override JSONObject section() throws Invalid, JSONException {
-            JSONObject next = copy(energy);
-            set(next, "monthly_fee", decimalOf(fee));
-            set(next, "budget", pointOf(budget, false));
-            set(next, "currency", text(currency));
-            set(next, "max_power_kw", decimalOf(maxPower));
-            JSONObject table = new JSONObject();
-            set(table, PEAK, decimalOf(peak));
-            set(table, OFF_PEAK, decimalOf(offPeak));
-            for (String line : text(others).split("\n")) {
-                String l = line.trim();
-                if (l.isEmpty()) continue;
-                String[] parts = l.split("\\s*[=:]\\s*|\\s+", 2);
-                Double price = null;
-                try { if (parts.length == 2) price = Double.parseDouble(parts[1].replace(',', '.').replace("€", "").trim()); } catch (NumberFormatException bad) { price = null; }
-                if (price == null || parts[0].isEmpty()) { others.setError(getString(R.string.energy_tariff_prices_invalid, l)); others.requestFocus(); throw new Invalid(); }
-                table.put(parts[0], price);
-            }
-            hours = new JSONArray();
-            for (String h : text(stretches).split("[,;]")) if (!h.trim().isEmpty()) hours.put(h.trim());
-            String period = pointOf(periodPoint, false);
-            if (table.length() == 0) {
-                if (hours.length() > 0 || !period.isEmpty()) { required(peak); }
-                set(next, "tariff", null);
-                return next;
-            }
-            if (hours.length() == 0 && period.isEmpty()) {
-                stretches.setError(getString(R.string.energy_off_peak_hours_needed));
-                stretches.requestFocus();
-                throw new Invalid();
-            }
-            JSONObject tariff = copy(energy.optJSONObject("tariff"));
-            tariff.put("prices", table);
-            // Without a meter's period, Moli follows the hours (energy.rs).
-            set(tariff, "period", period);
-            next.put("tariff", tariff);
-            return next;
-        }
-    }
-
-    /** The live gauge: the supplier's meter now, against the contract. */
-    final class LiveForm extends Form {
-        EditText power, max, warn;
-
-        @Override String title() { return getString(R.string.energy_live); }
-
-        @Override void fill() {
-            JSONObject live = energy.optJSONObject("live");
-            if (live == null) live = new JSONObject();
-            power = point(panel, R.string.energy_live_power, R.string.energy_live_power_help, live.optString("power"), new String[] {"power"}, null);
-            max = decimal(panel, R.string.energy_live_max, R.string.energy_live_max_help, live.opt("max"), "9000");
-            warn = decimal(panel, R.string.energy_live_warn, R.string.energy_live_warn_help, live.opt("warn"), "2000");
-        }
-
-        @Override JSONObject section() throws Invalid, JSONException {
-            JSONObject live = copy(energy.optJSONObject("live"));
-            live.put("power", pointOf(power, true));
-            Double full = decimalOf(max);
-            if (full == null) required(max);
-            live.put("max", full);
-            set(live, "warn", decimalOf(warn));
-            return with("live", live);
-        }
-
-        @Override JSONObject without() { return energy.has("live") ? with("live", null) : null; }
-    }
-
-    /** A home battery now: its charge, its power, what it holds. */
-    final class BatteryForm extends Form {
-        EditText soc, power, capacity;
-        Switch reversed;
-
-        @Override String title() { return getString(R.string.energy_battery); }
-
-        @Override void fill() {
-            JSONObject b = energy.optJSONObject("battery");
-            if (b == null) b = new JSONObject();
-            panel.addView(ui.note(getString(R.string.energy_battery_about)));
-            soc = point(panel, R.string.energy_battery_soc, 0, b.optString("soc"), new String[] {"percent"}, null);
-            power = point(panel, R.string.energy_battery_power, R.string.energy_battery_power_help, b.optString("power"), new String[] {"power"}, null);
-            reversed = toggle(panel, R.string.energy_battery_reversed, R.string.energy_battery_reversed_help, b.optBoolean("discharge_positive"));
-            capacity = decimal(panel, R.string.energy_battery_capacity, 0, b.opt("capacity_kwh"), "10");
-        }
-
-        @Override JSONObject section() throws Invalid, JSONException {
-            JSONObject b = copy(energy.optJSONObject("battery"));
-            set(b, "soc", pointOf(soc, false));
-            set(b, "power", pointOf(power, false));
-            set(b, "discharge_positive", reversed.isChecked());
-            set(b, "capacity_kwh", decimalOf(capacity));
-            return with("battery", b);
-        }
-
-        @Override JSONObject without() { return energy.has("battery") ? with("battery", null) : null; }
-    }
+    @Override protected void onDestroy() { work.shutdown(); super.onDestroy(); }
 }

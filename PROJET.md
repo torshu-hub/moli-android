@@ -36,6 +36,12 @@ Une intégration propre, c'est une fonctionnalité complète et native de Moli O
 - État : un seul ETAT.md court (jalon, branche/PR, décisions actives, preuves, prochaine action).
 - Quand je lance ou change une mission : conseiller modèle et niveau de réflexion selon la difficulté et mon quota ; colorer seulement ce qui change.
 
+## Écrans de réglages (Énergie et suivants, 27 nov.)
+- L'agent les conçoit lui-même (organisation, parcours, vocabulaire, aspect) : beaux, clairs, compris par n'importe qui de la maison sans connaître Moli ni son fichier ; ils proposent d'eux-mêmes ce qu'ils savent deviner. Le propriétaire n'a pas à donner les idées.
+- Ce qui n'allait pas sur le premier écran Énergie, à ne pas refaire : le vocabulaire de Moli (rôle, point, intégrer), du texte à écrire selon une syntaxe au lieu de valeurs à choisir, une action à chaque appui (lignes qui changent de tableau, rechargements).
+- Par défaut : travail groupé (on choisit, puis on enregistre une fois : une validation, un redémarrage) et « Voir ce qui sera écrit » (le bloc de `moli.toml`, avant et après).
+- Méthode : avant de coder, décrire en quelques lignes le parcours choisi ; construire l'écran entier, pas un premier jet ; finir par la liste des cas à essayer sur la tablette, pour tout tester d'un coup.
+
 ## Accords
 - Déjà accordés : branches, commits, PR, fusion de tes PR vers main quand la CI est verte et que ton rapport est publié, CI, construction et signature de l'APK par le workflow `android` du dépôt (le lancer ; le modifier seulement à ma demande).
 - Lecture seule accordée (26 nov.) : `rudy-io/moli-os` (Moli officiel, ses PR et branches) et les sources publiques d'intégrations de référence (Home Assistant, pyatmo…), pour appliquer le principe 1. Aucune écriture, aucun commentaire, aucune PR chez eux.
