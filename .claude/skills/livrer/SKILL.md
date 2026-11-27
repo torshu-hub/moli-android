@@ -14,3 +14,4 @@ Les règles sont dans PROJET.md (« Travailler », « Accords ») ; les pièges 
 5. **Fusion** (squash) par toi, quand la CI est verte et le rapport publié. Ensuite repartir de `origin/main` (PIEGES : la branche diverge après un squash).
 6. **APK** (seulement si le code de l'appli a changé) : la fusion lance le workflow `android` ; son `run_number` est le numéro de l'APK. Donner au propriétaire le numéro et le lien `https://github.com/torshu-hub/moli-android/releases/download/apk/moli-<numéro>.apk`, cliquable, puis le même lien dans un bloc à copier.
 7. **ETAT.md** : si la fusion change l'état (APK, PR, « à essayer »), une petite PR de documentation, même méthode.
+8. **Compte rendu final**, une fois la PR de documentation fusionnée : le dire, redonner le numéro de l'APK, son lien cliquable et le même lien dans un bloc à copier, puis les essais à faire sur la tablette, numérotés.
