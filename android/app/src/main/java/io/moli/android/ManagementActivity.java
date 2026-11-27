@@ -50,8 +50,16 @@ public final class ManagementActivity extends Activity {
     private View dot;
     private Button power, open;
     /** The tiles' lines that Moli and the files fill, and what they last said (kept when the page is rebuilt). */
-    private TextView integrationsLine, homeLine, heatingLine, energyLine, backupLine;
-    private String integrationsText, homeText, heatingText, energyText;
+    private TextView backupLine;
+    private final java.util.Map<String, TextView> lines = new java.util.HashMap<>();
+    private final java.util.Map<String, String> texts = new java.util.HashMap<>();
+
+    /** A tile that opens a screen, its line filled by `readSummaries` (`first` until then). */
+    private View screen(String key, int icon, int[] hue, int title, Class<?> screen, String first) {
+        TextView line = summary(texts.containsKey(key) ? texts.get(key) : first);
+        lines.put(key, line);
+        return ui.tile(icon, hue, getString(title), line, () -> startActivity(new Intent(this, screen)));
+    }
 
     private TextView summary(String words) {
         TextView t = new TextView(this);
@@ -129,27 +137,21 @@ public final class ManagementActivity extends Activity {
         page.addView(header(wide));
 
         int columns = ui.columns();
-        integrationsLine = summary(integrationsText == null ? getString(R.string.integrations_help) : integrationsText);
-        homeLine = summary(homeText == null ? "" : homeText);
-        heatingLine = summary(heatingText == null ? "" : heatingText);
-        energyLine = summary(energyText == null ? "" : energyText);
         backupLine = summary(lastBackup());
         page.addView(ui.group(getString(R.string.group_devices)));
         List<View> devices = new ArrayList<>();
-        devices.add(ui.tile(R.drawable.ic_extension, Look.BLUE, getString(R.string.integrations), integrationsLine,
-                () -> startActivity(new Intent(this, IntegrationsActivity.class))));
+        devices.add(screen("integrations", R.drawable.ic_extension, Look.BLUE, R.string.integrations, IntegrationsActivity.class, getString(R.string.integrations_help)));
         devices.add(ui.tile(R.drawable.ic_wifi_find, Look.TEAL, getString(R.string.network), line(R.string.network_help),
                 () -> startActivity(new Intent(this, NetworkActivity.class))));
         page.addView(ui.grid(devices, columns));
 
         page.addView(ui.group(getString(R.string.group_house)));
         List<View> house = new ArrayList<>();
-        house.add(ui.tile(R.drawable.ic_weekend, Look.AMBER, getString(R.string.home_screen), homeLine,
-                () -> startActivity(new Intent(this, HomeActivity.class))));
-        house.add(ui.tile(R.drawable.ic_thermostat, Look.AMBER, getString(R.string.heating_screen), heatingLine,
-                () -> startActivity(new Intent(this, HeatingActivity.class))));
-        house.add(ui.tile(R.drawable.ic_bolt, Look.AMBER, getString(R.string.energy), energyLine,
-                () -> startActivity(new Intent(this, EnergyActivity.class))));
+        house.add(screen("home", R.drawable.ic_weekend, Look.AMBER, R.string.home_screen, HomeActivity.class, ""));
+        house.add(screen("heating", R.drawable.ic_thermostat, Look.AMBER, R.string.heating_screen, HeatingActivity.class, ""));
+        house.add(screen("lights", R.drawable.ic_lightbulb, Look.AMBER, R.string.lights_screen, LightsActivity.class, ""));
+        house.add(screen("scenes", R.drawable.ic_palette, Look.AMBER, R.string.scenes_screen, ScenesActivity.class, ""));
+        house.add(screen("energy", R.drawable.ic_bolt, Look.AMBER, R.string.energy, EnergyActivity.class, ""));
         page.addView(ui.grid(house, columns));
 
         page.addView(ui.group(getString(R.string.group_tablet)));
@@ -258,18 +260,33 @@ public final class ManagementActivity extends Activity {
         int port = MoliService.port;
         boolean serving = answered;
         probe.execute(() -> {
-            String integrations = integrationsSummary(serving ? IntegrationsActivity.health(port) : null);
-            String home = homeSummary();
-            String heating = heatingSummary();
-            String energy = energySummary();
+            java.util.Map<String, String> now = new java.util.HashMap<>();
+            now.put("integrations", integrationsSummary(serving ? IntegrationsActivity.health(port) : null));
+            now.put("home", homeSummary());
+            now.put("heating", heatingSummary());
+            now.put("lights", listSummary("fixture", R.plurals.lights_summary, null));
+            now.put("scenes", listSummary("scene", R.plurals.scenes_summary, "rhythm"));
+            now.put("energy", energySummary());
             handler.post(() -> {
                 if (isDestroyed()) return;
-                if (integrations != null) integrationsLine.setText(integrationsText = integrations);
-                if (home != null) homeLine.setText(homeText = home);
-                if (heating != null) heatingLine.setText(heatingText = heating);
-                if (energy != null) energyLine.setText(energyText = energy);
+                for (java.util.Map.Entry<String, String> e : now.entrySet()) {
+                    if (e.getValue() == null || !lines.containsKey(e.getKey())) continue;
+                    texts.put(e.getKey(), e.getValue());
+                    lines.get(e.getKey()).setText(e.getValue());
+                }
             });
         });
+    }
+
+    /** « 3 luminaires », « 2 scènes · rythme de la journée », or « Pas encore réglé ». */
+    private String listSummary(String section, int plural, String also) {
+        JSONObject sections;
+        try { sections = also == null ? Setup.sections(this, section).optJSONObject("sections") : Setup.sections(this, section, also).optJSONObject("sections"); } catch (Exception unreadable) { return null; }
+        JSONArray list = sections.optJSONArray(section);
+        List<String> parts = new ArrayList<>();
+        if (list != null && list.length() > 0) parts.add(getResources().getQuantityString(plural, list.length(), list.length()));
+        if (also != null && !sections.isNull(also)) parts.add(getString(R.string.scenes_summary_rhythm));
+        return parts.isEmpty() ? getString(R.string.not_set_yet) : String.join(" · ", parts);
     }
 
     /** « 3 intégrations · toutes répondent », « … · 1 ne répond pas », or none yet. */

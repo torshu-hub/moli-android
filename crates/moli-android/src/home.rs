@@ -308,6 +308,7 @@ fn house_of(snapshot: &Json, home: Option<&Json>) -> Json {
                     "label": text(&device["label"]["points"][key]).or_else(|| text(&p["label"])).unwrap_or(key),
                     "semantic": p["semantic"],
                     "type": p["kind"]["type"],
+                    "kind": p["kind"],
                     "unit": p["unit"],
                     "writable": p["access"]["write"].as_bool() == Some(true),
                     "value": device["state"][key]["value"],
