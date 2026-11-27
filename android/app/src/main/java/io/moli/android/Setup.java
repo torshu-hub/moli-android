@@ -315,6 +315,13 @@ final class Setup {
         return restart(context, path);
     }
 
+    /** Keeps `values` ({name: value}) in the official vault for `instance`; never read back. */
+    static void storeSecrets(Context context, String instance, JSONObject values) throws Exception {
+        if (values.length() == 0) return;
+        call("store", config(context).getPath(), ProtectedKey.open(context)[0],
+                new JSONObject().put("instance", instance).put("values", values).toString());
+    }
+
     /** The tools agents reach over MCP, as Moli lists them. */
     static JSONArray mcpTools(Context context) throws Exception {
         return new JSONArray(call("mcp_tools", config(context).getPath(), "", ""));

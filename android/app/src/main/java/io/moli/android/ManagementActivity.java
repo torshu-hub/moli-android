@@ -161,6 +161,11 @@ public final class ManagementActivity extends Activity {
         security.add(screen("mcp", R.drawable.ic_smart_toy, Look.BLUE, R.string.mcp_screen, McpActivity.class, ""));
         page.addView(ui.grid(security, columns));
 
+        page.addView(ui.group(getString(R.string.group_assistant)));
+        List<View> assistant = new ArrayList<>();
+        assistant.add(screen("assistant", R.drawable.ic_chat, Look.TEAL, R.string.assistant_screen, AssistantActivity.class, ""));
+        page.addView(ui.grid(assistant, columns));
+
         page.addView(ui.group(getString(R.string.group_tablet)));
         List<View> tablet = new ArrayList<>();
         tablet.add(ui.tile(R.drawable.ic_download, Look.SLATE, getString(R.string.backup), backupLine, this::chooseBackup));
@@ -277,6 +282,7 @@ public final class ManagementActivity extends Activity {
             now.put("energy", energySummary());
             now.put("guard", guardSummary());
             now.put("mcp", mcpSummary());
+            now.put("assistant", assistantSummary());
             handler.post(() -> {
                 if (isDestroyed()) return;
                 for (java.util.Map.Entry<String, String> e : now.entrySet()) {
@@ -317,6 +323,13 @@ public final class ManagementActivity extends Activity {
         if (q != null) parts.add(getString(R.string.guard_summary_quiet, q.optString("from"), q.optString("to")));
         if (g != null && "pin".equals(g.optString("dashboard"))) parts.add(getString(R.string.guard_summary_pin));
         return parts.isEmpty() ? getString(R.string.guard_summary_none) : String.join(" · ", parts);
+    }
+
+    /** « gpt-4.1-mini », or « Désactivé ». */
+    private String assistantSummary() {
+        JSONObject a;
+        try { a = Setup.sections(this, "assistant").optJSONObject("sections").optJSONObject("assistant"); } catch (Exception unreadable) { return null; }
+        return a == null ? getString(R.string.assistant_summary_off) : a.optString("model", AssistantActivity.MODEL);
     }
 
     /** « Tous les outils ouverts », or « 2 outils coupés ». */
