@@ -88,15 +88,19 @@ Java contre l'API 34 (PIEGES) en plus du job `apk`.
 
 1. **Accueil** : la navigation de toute la refonte, groupes et résumés vivants, adresse de Moli
    sur le réseau, Journal accessible depuis l'accueil, icônes. Tout le reste s'y accroche.
-2. **Pièces et affichage** (`home.json`) : pièces (ordre, icône, étage, dehors, autres noms),
-   favoris, portes, masqués, sans bouton, sorties de multiprise, position de la maison. En
-   premier parce que les pièces servent à tous les autres écrans. Apporte `SettingsScreen` et le
-   sélecteur d'appareils.
+2. **Pièces et affichage** (`home.json`) : pièces (ordre, icône, étage, dedans / dehors, autres
+   noms ; « Moli propose » les pièces que nomment les appareils), accueil du tableau de bord (nom
+   de la maison, lumières, raccourcis, clims, caméras, portes surveillées), masqués, sans bouton,
+   apparence par défaut (thème, place et forme du menu). En premier parce que les pièces servent
+   à tous les autres écrans. Apporte `SettingsScreen` et le sélecteur d'appareils (`Picker`).
+   Pas ici : les noms des sorties de multiprise (le crayon du tableau de bord les donne déjà), la
+   position de la maison (lot 5, avec le soleil).
 3. **Chauffage** : pièces chauffées (capteur, vannes, réglage fin replié), programmes de la
    maison, absence. Fort usage l'hiver, uniquement dans le fichier aujourd'hui. Apporte le module
    générique de sections et `hosted::check`.
 4. **Lumières** puis **Scènes et rythme** (les scènes visent les luminaires).
-5. **Dehors et soleil** (stations, prévision, façades, position).
+5. **Dehors et soleil** (stations, prévision, façades, position de la maison : `location` de
+   `home.json`, qui prime sur `moli.toml`).
 6. **Protection** et **Assistants IA** (`[guard]`, `[mcp]`). La question Hyundai
    (`protected_devices` sur le verrouillage) reste à la mission Hyundai : l'écran offre la liste,
    il ne protège rien de lui-même.
