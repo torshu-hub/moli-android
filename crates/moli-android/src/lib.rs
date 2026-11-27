@@ -280,6 +280,8 @@ fn call(action: &str, config: &Path, key: String, body: &str) -> anyhow::Result<
             String::new()
         }
         "sections_preview" => sections::preview(config, body)?.to_string(),
+        // The tools agents reach over MCP, as Moli lists them (`[mcp] disabled_tools`).
+        "mcp_tools" => serde_json::to_string(&moli_api::mcp_tool_names())?,
         "network_scan" => network::scan(&serde_json::from_str(body)?)?.to_string(),
         other => anyhow::bail!("unknown action {other:?}"),
     })

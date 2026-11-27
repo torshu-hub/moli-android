@@ -315,6 +315,11 @@ final class Setup {
         return restart(context, path);
     }
 
+    /** The tools agents reach over MCP, as Moli lists them. */
+    static JSONArray mcpTools(Context context) throws Exception {
+        return new JSONArray(call("mcp_tools", config(context).getPath(), "", ""));
+    }
+
     /** The end of the journal of Moli and of the app (journal.rs). */
     static String journal(Context context) throws Exception {
         return call("journal", config(context).getPath(), "", "");

@@ -155,6 +155,12 @@ public final class ManagementActivity extends Activity {
         house.add(screen("energy", R.drawable.ic_bolt, Look.AMBER, R.string.energy, EnergyActivity.class, ""));
         page.addView(ui.grid(house, columns));
 
+        page.addView(ui.group(getString(R.string.group_security)));
+        List<View> security = new ArrayList<>();
+        security.add(screen("guard", R.drawable.ic_shield, Look.BLUE, R.string.guard_screen, GuardActivity.class, ""));
+        security.add(screen("mcp", R.drawable.ic_smart_toy, Look.BLUE, R.string.mcp_screen, McpActivity.class, ""));
+        page.addView(ui.grid(security, columns));
+
         page.addView(ui.group(getString(R.string.group_tablet)));
         List<View> tablet = new ArrayList<>();
         tablet.add(ui.tile(R.drawable.ic_download, Look.SLATE, getString(R.string.backup), backupLine, this::chooseBackup));
@@ -269,6 +275,8 @@ public final class ManagementActivity extends Activity {
             now.put("scenes", listSummary("scene", R.plurals.scenes_summary, "rhythm"));
             now.put("outdoor", outdoorSummary());
             now.put("energy", energySummary());
+            now.put("guard", guardSummary());
+            now.put("mcp", mcpSummary());
             handler.post(() -> {
                 if (isDestroyed()) return;
                 for (java.util.Map.Entry<String, String> e : now.entrySet()) {
@@ -296,6 +304,28 @@ public final class ManagementActivity extends Activity {
         JSONArray facades = s == null ? null : s.optJSONArray("facade");
         if (facades != null && facades.length() > 0) parts.add(getResources().getQuantityString(R.plurals.outdoor_summary_facades, facades.length(), facades.length()));
         return parts.isEmpty() ? getString(R.string.not_set_yet) : String.join(" · ", parts);
+    }
+
+    /** « 2 pièces protégées · heures calmes 21:00–07:30 », or « Rien de protégé ». */
+    private String guardSummary() {
+        JSONObject g;
+        try { g = Setup.sections(this, "guard").optJSONObject("sections").optJSONObject("guard"); } catch (Exception unreadable) { return null; }
+        List<String> parts = new ArrayList<>();
+        JSONArray rooms = g == null ? null : g.optJSONArray("protected_rooms");
+        if (rooms != null && rooms.length() > 0) parts.add(getResources().getQuantityString(R.plurals.guard_summary_rooms, rooms.length(), rooms.length()));
+        JSONObject q = g == null ? null : g.optJSONObject("quiet_hours");
+        if (q != null) parts.add(getString(R.string.guard_summary_quiet, q.optString("from"), q.optString("to")));
+        if (g != null && "pin".equals(g.optString("dashboard"))) parts.add(getString(R.string.guard_summary_pin));
+        return parts.isEmpty() ? getString(R.string.guard_summary_none) : String.join(" · ", parts);
+    }
+
+    /** « Tous les outils ouverts », or « 2 outils coupés ». */
+    private String mcpSummary() {
+        JSONObject m;
+        try { m = Setup.sections(this, "mcp").optJSONObject("sections").optJSONObject("mcp"); } catch (Exception unreadable) { return null; }
+        JSONArray off = m == null ? null : m.optJSONArray("disabled_tools");
+        return off == null || off.length() == 0 ? getString(R.string.mcp_summary_all)
+                : getResources().getQuantityString(R.plurals.mcp_summary_off, off.length(), off.length());
     }
 
     /** « 3 luminaires », « 2 scènes · rythme de la journée », or « Pas encore réglé ». */

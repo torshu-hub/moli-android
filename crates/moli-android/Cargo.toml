@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 moli-os = { path = "../moli-os" }
+moli-api.workspace = true
 moli-runtime.workspace = true
 moli-energy.workspace = true
 moli-offpeak.workspace = true
