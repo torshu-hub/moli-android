@@ -1682,6 +1682,7 @@ dependencies = [
  "md-5",
  "moli-energy",
  "moli-net",
+ "moli-offpeak",
  "moli-os",
  "moli-profile",
  "moli-runtime",
@@ -2372,6 +2373,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "moli-offpeak"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "jiff",
+ "moli-core",
+ "moli-i18n",
+ "moli-runtime",
+ "serde",
+ "tokio",
+ "tokio-util",
+ "toml",
+]
+
+[[package]]
 name = "moli-os"
 version = "0.1.0"
 dependencies = [
@@ -2422,6 +2438,7 @@ dependencies = [
  "moli-moonraker",
  "moli-net",
  "moli-netatmo",
+ "moli-offpeak",
  "moli-outdoor",
  "moli-overkiz",
  "moli-philips",

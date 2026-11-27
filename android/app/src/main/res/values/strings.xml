@@ -305,11 +305,11 @@
     <string name="energy_fee_help">Ajouté à l’estimation de la facture du mois.</string>
     <string name="energy_budget">Budget mensuel (point)</string>
     <string name="energy_budget_help">Une aide de la maison qui tient le budget : Moli dit quand la facture estimée le dépasse.</string>
-    <string name="energy_tariff">Tarif par période</string>
-    <string name="energy_tariff_help">Heures pleines et heures creuses : le prix suit la période donnée par le compteur.</string>
-    <string name="energy_tariff_period">Période en cours (point)</string>
-    <string name="energy_tariff_period_help">Le point du Linky qui dit HP ou HC (PTEC).</string>
-    <string name="energy_tariff_prices">Prix par période</string>
+    <string name="energy_tariff">Heures pleines et heures creuses</string>
+    <string name="energy_tariff_help">Le prix de chaque heure suit sa période. Sans lecteur Linky, Moli la déduit de vos heures creuses.</string>
+    <string name="energy_tariff_period">Période donnée par le compteur (Linky)</string>
+    <string name="energy_tariff_period_help">Avec un lecteur Linky : son point HP/HC (PTEC). Il passe avant les horaires.</string>
+    <string name="energy_tariff_prices">Autres périodes (Tempo…)</string>
     <string name="energy_tariff_prices_help">Une ligne par période : nom = prix du kWh.</string>
     <string name="energy_tariff_prices_invalid">Ligne illisible : « %1$s » (attendu : HP = 0.2081)</string>
     <string name="energy_currency">Devise</string>
@@ -332,4 +332,10 @@
     <string name="energy_point_invalid">Un point : instance:appareil/clé</string>
     <string name="energy_number_invalid">Un nombre (0.2016)</string>
     <string name="energy_whole_invalid">Un nombre entier</string>
+    <string name="energy_price_peak">Prix du kWh en heures pleines</string>
+    <string name="energy_price_off_peak">Prix du kWh en heures creuses</string>
+    <string name="energy_off_peak_hours">Heures creuses</string>
+    <string name="energy_off_peak_hours_help">Celles du contrat (facture ou espace client), séparées par des virgules : 22:00-06:00, ou 01:30-07:30, 12:30-14:30.</string>
+    <string name="energy_off_peak_hours_needed">Vos heures creuses (22:00-06:00), ou la période du compteur dans « Réglages avancés »</string>
+    <string name="energy_off_peak_words">heures creuses %1$s</string>
 </resources>

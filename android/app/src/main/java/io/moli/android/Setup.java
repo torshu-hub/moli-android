@@ -191,20 +191,26 @@ final class Setup {
         return put(context, change, instance, new JSONObject());
     }
 
-    /** The house's `[energy]` section, as JSON (energy.rs): `{}` when it has none. */
+    /**
+     * The house's `[energy]` section and off-peak hours (energy.rs `read`):
+     * `{section, offpeak: [...], offpeak_point}`.
+     */
     static JSONObject energy(Context context) throws Exception {
         return new JSONObject(call("energy", config(context).getPath(), "", ""));
     }
 
     /**
-     * Writes the whole `[energy]` section (`{}` takes it out) once the
-     * official check accepts it, then restarts Moli as `put` does. Null when
+     * Writes the whole `[energy]` section (`{}` takes it out) and the
+     * off-peak hours (null: left as they are; empty: taken out) once the
+     * official checks accept them, then restarts Moli as `put` does. Null when
      * Moli runs with it; else the reason, and the house is as it was.
      */
-    static String energyPut(Context context, JSONObject section) throws Exception {
+    static String energyPut(Context context, JSONObject section, JSONArray offpeak) throws Exception {
         String path = config(context).getPath();
+        JSONObject body = new JSONObject().put("section", section);
+        if (offpeak != null) body.put("offpeak", offpeak);
         try {
-            call("energy_put", path, "", section.toString());
+            call("energy_put", path, "", body.toString());
         } catch (IllegalStateException refused) {
             // Refused by the check: nothing written, Moli left running.
             return String.valueOf(refused.getMessage());

@@ -1,0 +1,24 @@
+[integration]
+id = "heures-creuses"
+name = "Heures creuses par horaires (période HP / HC)"
+brands = []
+models = []
+# Nothing on the network: the clock of the house.
+transport = "native"
+driver = "offpeak"
+crate = "moli-offpeak"
+
+[discovery]
+mdns = []
+ssdp = []
+ports = []
+
+[needs]
+secrets = []
+vars = []
+# The off-peak stretches of the contract: ["22:00-06:00"].
+options = ["offpeak"]
+
+[origin]
+reused = "même rôle que l'aide « Moments de la journée » de Home Assistant ; aucun code repris"
+author = "agent"

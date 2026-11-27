@@ -1233,5 +1233,8 @@
   "pilotes.netatmo.point_inconnu": "unknown point: {point}",
   "pilotes.netatmo.appareil_inconnu": "device unknown to Netatmo",
   "pilotes.netatmo.consigne_inconnue": "the room's setpoint is not known yet",
-  "pilotes.netatmo.valeur_inconnue": "unknown value: {value}"
+  "pilotes.netatmo.valeur_inconnue": "unknown value: {value}",
+  "pilotes.offpeak.periode": "Tariff period",
+  "pilotes.offpeak.modele": "Off-peak hours",
+  "pilotes.offpeak.point": "Period (HP / HC)"
 }

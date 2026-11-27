@@ -1442,6 +1442,7 @@ const KINDS: &[&str] = &[
     "jackery",
     "vicare",
     "netatmo",
+    "offpeak",
     "synology",
     "proxmox",
     "philips",
@@ -1730,6 +1731,7 @@ fn build_driver(
         "netatmo" => Arc::new(moli_netatmo::Netatmo::new(
             config.options.clone().try_into().with_context(context)?,
         )),
+        "offpeak" => configured_driver(config, moli_offpeak::OffPeak::new)?,
         "vicare" => Arc::new(moli_vicare::Vicare::new(
             config.options.clone().try_into().with_context(context)?,
         )),

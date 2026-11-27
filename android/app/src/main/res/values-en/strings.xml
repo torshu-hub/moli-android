@@ -304,11 +304,11 @@
     <string name="energy_fee_help">Added to the month’s estimated bill.</string>
     <string name="energy_budget">Monthly budget (point)</string>
     <string name="energy_budget_help">A house helper holding the budget: Moli says when the estimated bill goes over it.</string>
-    <string name="energy_tariff">Tariff by period</string>
-    <string name="energy_tariff_help">Peak and off-peak hours: the price follows the period the meter gives.</string>
-    <string name="energy_tariff_period">Current period (point)</string>
-    <string name="energy_tariff_period_help">The meter’s point saying HP or HC (PTEC).</string>
-    <string name="energy_tariff_prices">Price by period</string>
+    <string name="energy_tariff">Peak and off-peak hours</string>
+    <string name="energy_tariff_help">Each hour is priced at its period. Without a Linky reader, Moli works it out from your off-peak hours.</string>
+    <string name="energy_tariff_period">Period given by the meter (Linky)</string>
+    <string name="energy_tariff_period_help">With a Linky reader: its HP/HC point (PTEC). It comes before the hours.</string>
+    <string name="energy_tariff_prices">Other periods (Tempo…)</string>
     <string name="energy_tariff_prices_help">One line per period: name = price per kWh.</string>
     <string name="energy_tariff_prices_invalid">Unreadable line: « %1$s » (expected: HP = 0.2081)</string>
     <string name="energy_currency">Currency</string>
@@ -331,4 +331,10 @@
     <string name="energy_point_invalid">A point: instance:device/key</string>
     <string name="energy_number_invalid">A number (0.2016)</string>
     <string name="energy_whole_invalid">A whole number</string>
+    <string name="energy_price_peak">Price per kWh, peak hours</string>
+    <string name="energy_price_off_peak">Price per kWh, off-peak hours</string>
+    <string name="energy_off_peak_hours">Off-peak hours</string>
+    <string name="energy_off_peak_hours_help">Those of the contract (bill or customer account), separated by commas: 22:00-06:00, or 01:30-07:30, 12:30-14:30.</string>
+    <string name="energy_off_peak_hours_needed">Your off-peak hours (22:00-06:00), or the meter’s period under « Advanced settings »</string>
+    <string name="energy_off_peak_words">off-peak %1$s</string>
 </resources>

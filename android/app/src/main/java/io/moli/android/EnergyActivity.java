@@ -61,6 +61,10 @@ public final class EnergyActivity extends Activity {
 
     /** The section as written in moli.toml (`{}` when the house has none). */
     private JSONObject energy = new JSONObject();
+    /** The off-peak hours of the house (block `heures-creuses`), and the period they give (null: none). */
+    private JSONArray offpeak = new JSONArray();
+    private String offpeakPoint;
+    static final String PEAK = "HP", OFF_PEAK = "HC";
     /** The house's points (null: Moli did not answer), and the plugs no meter follows. */
     private JSONArray points, suggested = new JSONArray();
     private final Map<String, JSONObject> pointById = new HashMap<>();
@@ -128,14 +132,16 @@ public final class EnergyActivity extends Activity {
     private void load() {
         work.execute(() -> {
             try {
-                JSONObject section = Setup.energy(this);
+                JSONObject read = Setup.energy(this);
                 JSONObject house = null;
                 try { house = Setup.energyPoints(this); } catch (Exception silent) { /* Moli not answering: typed by hand */ }
-                JSONObject read = house;
+                JSONObject points = house;
                 handler.post(() -> {
                     if (isDestroyed()) return;
-                    energy = section;
-                    takePoints(read);
+                    energy = read.optJSONObject("section") == null ? new JSONObject() : read.optJSONObject("section");
+                    offpeak = read.optJSONArray("offpeak") == null ? new JSONArray() : read.optJSONArray("offpeak");
+                    offpeakPoint = read.isNull("offpeak_point") ? null : read.optString("offpeak_point");
+                    takePoints(points);
                     form = null;
                     showList();
                     showSide();
@@ -328,6 +334,11 @@ public final class EnergyActivity extends Activity {
             }
             parts.add(String.join(", ", each));
         }
+        if (offpeak.length() > 0) {
+            List<String> each = new ArrayList<>();
+            for (int i = 0; i < offpeak.length(); i++) each.add(offpeak.optString(i));
+            parts.add(getString(R.string.energy_off_peak_words, String.join(", ", each)));
+        }
         if (energy.has("budget")) parts.add(getString(R.string.energy_budget_words));
         return parts.isEmpty() ? getString(R.string.energy_not_set) : String.join(" · ", parts);
     }
@@ -397,8 +408,10 @@ public final class EnergyActivity extends Activity {
         startActivity(new Intent(this, DashboardActivity.class).putExtra(DashboardActivity.ROUTE, "#/energie"));
     }
 
-    /** Writes the new section and restarts Moli, off the UI thread. */
-    void apply(JSONObject section) {
+    void apply(JSONObject section) { apply(section, null); }
+
+    /** Writes the new section (and the off-peak hours) and restarts Moli, off the UI thread. */
+    void apply(JSONObject section, JSONArray hours) {
         busy = true;
         banner.setText(R.string.setup_restarting);
         banner.setBackground(ui.round(Look.INFO, 10));
@@ -406,7 +419,7 @@ public final class EnergyActivity extends Activity {
         if (form != null) form.lock(true);
         work.execute(() -> {
             String refused;
-            try { refused = Setup.energyPut(this, section); } catch (Exception failure) { refused = String.valueOf(failure.getMessage()); }
+            try { refused = Setup.energyPut(this, section, hours); } catch (Exception failure) { refused = String.valueOf(failure.getMessage()); }
             String why = refused;
             handler.post(() -> {
                 busy = false;
@@ -507,6 +520,8 @@ public final class EnergyActivity extends Activity {
     abstract class Form {
         final List<View> controls = new ArrayList<>();
         LinearLayout panel;
+        /** The off-peak hours to write (null: left as they are). */
+        JSONArray hours;
 
         abstract String title();
 
@@ -531,7 +546,7 @@ public final class EnergyActivity extends Activity {
             LinearLayout actions = ui.row();
             Button save = ui.primary(getString(R.string.setup_save));
             save.setOnClickListener(v -> {
-                try { apply(section()); } catch (Invalid shownOnField) { /* the field says why */ } catch (JSONException impossible) { throw new IllegalStateException(impossible); }
+                try { JSONObject next = section(); apply(next, hours); } catch (Invalid shownOnField) { /* the field says why */ } catch (JSONException impossible) { throw new IllegalStateException(impossible); }
             });
             actions.addView(save, ui.share(0));
             controls.add(save);
@@ -886,9 +901,14 @@ public final class EnergyActivity extends Activity {
         @Override JSONObject without() { return index < 0 ? null : withEntry("load", index, null); }
     }
 
-    /** The bill: subscription, budget, tariff by period, currency, the most a meter draws. */
+    /**
+     * The bill: subscription, budget, the price of peak and off-peak hours
+     * and the off-peak hours of the contract (a block `heures-creuses` the
+     * tariff follows), or the period a Linky reader gives; other periods
+     * (Tempo), currency, the most a meter draws.
+     */
     final class BillForm extends Form {
-        EditText fee, budget, periodPoint, prices, currency, maxPower;
+        EditText fee, budget, peak, offPeak, stretches, periodPoint, others, currency, maxPower;
 
         @Override String title() { return getString(R.string.energy_bill); }
 
@@ -896,23 +916,32 @@ public final class EnergyActivity extends Activity {
             fee = decimal(panel, R.string.energy_fee, R.string.energy_fee_help, energy.opt("monthly_fee"), "19.56");
             budget = point(panel, R.string.energy_budget, R.string.energy_budget_help, energy.optString("budget"), new String[] {"number"}, null);
             JSONObject tariff = energy.optJSONObject("tariff");
+            JSONObject each = tariff == null ? new JSONObject() : tariff.optJSONObject("prices");
+            if (each == null) each = new JSONObject();
             panel.addView(ui.title(getString(R.string.energy_tariff)), ui.matchWrap(0, ui.dp(18), 0, 0));
             panel.addView(ui.note(getString(R.string.energy_tariff_help)));
-            periodPoint = point(panel, R.string.energy_tariff_period, R.string.energy_tariff_period_help,
-                    tariff == null ? "" : tariff.optString("period"), new String[] {"text"}, null);
-            prices = ui.field("HP = 0.2081\nHC = 0.1635", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-            prices.setMinLines(2);
-            prices.setGravity(Gravity.TOP);
+            peak = decimal(panel, R.string.energy_price_peak, 0, each.opt(PEAK), "0.2081");
+            offPeak = decimal(panel, R.string.energy_price_off_peak, 0, each.opt(OFF_PEAK), "0.1635");
+            List<String> held = new ArrayList<>();
+            for (int i = 0; i < offpeak.length(); i++) held.add(offpeak.optString(i));
+            stretches = words(panel, R.string.energy_off_peak_hours, R.string.energy_off_peak_hours_help, String.join(", ", held), "22:00-06:00");
+            // A period the hours give is theirs; another one is a meter's (Linky).
+            String period = tariff == null ? "" : tariff.optString("period");
+            if (period.equals(offpeakPoint)) period = "";
             StringBuilder lines = new StringBuilder();
-            JSONObject each = tariff == null ? null : tariff.optJSONObject("prices");
-            if (each != null) for (java.util.Iterator<String> k = each.keys(); k.hasNext(); ) {
+            for (java.util.Iterator<String> k = each.keys(); k.hasNext(); ) {
                 String name = k.next();
+                if (name.equals(PEAK) || name.equals(OFF_PEAK)) continue;
                 if (lines.length() > 0) lines.append('\n');
                 lines.append(name).append(" = ").append(plain(each.opt(name)));
             }
-            prices.setText(lines);
-            box(panel, getString(R.string.energy_tariff_prices), getString(R.string.energy_tariff_prices_help), prices);
-            LinearLayout part = more(energy.has("currency") || energy.has("max_power_kw"));
+            LinearLayout part = more(!period.isEmpty() || lines.length() > 0 || energy.has("currency") || energy.has("max_power_kw"));
+            periodPoint = point(part, R.string.energy_tariff_period, R.string.energy_tariff_period_help, period, new String[] {"text"}, null);
+            others = ui.field("BLEU_HP = 0.1609", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+            others.setMinLines(2);
+            others.setGravity(Gravity.TOP);
+            others.setText(lines);
+            box(part, getString(R.string.energy_tariff_prices), getString(R.string.energy_tariff_prices_help), others);
             currency = words(part, R.string.energy_currency, 0, energy.optString("currency"), "€");
             maxPower = decimal(part, R.string.energy_max_power, R.string.energy_max_power_help, energy.opt("max_power_kw"), "36");
             panel.addView(ui.note(getString(R.string.energy_price_elsewhere)), ui.matchWrap(0, ui.dp(12), 0, 0));
@@ -928,21 +957,35 @@ public final class EnergyActivity extends Activity {
             set(next, "currency", text(currency));
             set(next, "max_power_kw", decimalOf(maxPower));
             JSONObject table = new JSONObject();
-            for (String line : text(prices).split("\n")) {
+            set(table, PEAK, decimalOf(peak));
+            set(table, OFF_PEAK, decimalOf(offPeak));
+            for (String line : text(others).split("\n")) {
                 String l = line.trim();
                 if (l.isEmpty()) continue;
                 String[] parts = l.split("\\s*[=:]\\s*|\\s+", 2);
                 Double price = null;
                 try { if (parts.length == 2) price = Double.parseDouble(parts[1].replace(',', '.').replace("€", "").trim()); } catch (NumberFormatException bad) { price = null; }
-                if (price == null || parts[0].isEmpty()) { prices.setError(getString(R.string.energy_tariff_prices_invalid, l)); prices.requestFocus(); throw new Invalid(); }
+                if (price == null || parts[0].isEmpty()) { others.setError(getString(R.string.energy_tariff_prices_invalid, l)); others.requestFocus(); throw new Invalid(); }
                 table.put(parts[0], price);
             }
-            String period = pointOf(periodPoint, table.length() > 0);
-            if (!period.isEmpty() && table.length() == 0) { required(prices); }
+            hours = new JSONArray();
+            for (String h : text(stretches).split("[,;]")) if (!h.trim().isEmpty()) hours.put(h.trim());
+            String period = pointOf(periodPoint, false);
+            if (table.length() == 0) {
+                if (hours.length() > 0 || !period.isEmpty()) { required(peak); }
+                set(next, "tariff", null);
+                return next;
+            }
+            if (hours.length() == 0 && period.isEmpty()) {
+                stretches.setError(getString(R.string.energy_off_peak_hours_needed));
+                stretches.requestFocus();
+                throw new Invalid();
+            }
             JSONObject tariff = copy(energy.optJSONObject("tariff"));
-            tariff.put("period", period);
             tariff.put("prices", table);
-            set(next, "tariff", period.isEmpty() ? null : tariff);
+            // Without a meter's period, Moli follows the hours (energy.rs).
+            set(tariff, "period", period);
+            next.put("tariff", tariff);
             return next;
         }
     }

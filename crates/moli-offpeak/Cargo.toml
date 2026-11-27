@@ -1,0 +1,24 @@
+[package]
+name = "moli-offpeak"
+description = "Moli OS driver for off-peak hours by the clock: a tariff period (HP / HC) for homes whose meter does not say it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+jiff.workspace = true
+moli-core.workspace = true
+moli-i18n.workspace = true
+moli-runtime.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tokio-util.workspace = true
+toml.workspace = true
+
+[lints]
+workspace = true
