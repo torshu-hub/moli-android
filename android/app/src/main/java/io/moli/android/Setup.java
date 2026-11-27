@@ -191,6 +191,39 @@ final class Setup {
         return put(context, change, instance, new JSONObject());
     }
 
+    /** The house's `[energy]` section, as JSON (energy.rs): `{}` when it has none. */
+    static JSONObject energy(Context context) throws Exception {
+        return new JSONObject(call("energy", config(context).getPath(), "", ""));
+    }
+
+    /**
+     * Writes the whole `[energy]` section (`{}` takes it out) once the
+     * official check accepts it, then restarts Moli as `put` does. Null when
+     * Moli runs with it; else the reason, and the house is as it was.
+     */
+    static String energyPut(Context context, JSONObject section) throws Exception {
+        String path = config(context).getPath();
+        try {
+            call("energy_put", path, "", section.toString());
+        } catch (IllegalStateException refused) {
+            // Refused by the check: nothing written, Moli left running.
+            return String.valueOf(refused.getMessage());
+        }
+        Backup.stop(context);
+        return restart(context, path);
+    }
+
+    /**
+     * The house's points to choose from, and the plugs no meter follows
+     * (energy.rs `points`): `{points: [{id, device, name, label, unit,
+     * family, value}], suggested: [{device, name, point}]}`. Moli must run.
+     */
+    static JSONObject energyPoints(Context context) throws Exception {
+        String pin = ProtectedKey.open(context)[1];
+        String body = new JSONObject().put("port", MoliService.port).put("pin", pin).toString();
+        return new JSONObject(call("energy_points", config(context).getPath(), "", body));
+    }
+
     /** The end of the journal of Moli and of the app (journal.rs). */
     static String journal(Context context) throws Exception {
         return call("journal", config(context).getPath(), "", "");

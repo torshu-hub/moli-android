@@ -431,13 +431,13 @@ fn host(port: u16) -> String {
 }
 
 /// The house's own API, as the dashboard calls it: a human session.
-struct Moli {
+pub(crate) struct Moli {
     port: u16,
     cookie: String,
 }
 
 impl Moli {
-    async fn open(port: u16, pin: &str) -> anyhow::Result<Self> {
+    pub(crate) async fn open(port: u16, pin: &str) -> anyhow::Result<Self> {
         let request = moli_net::json_body(
             http::Request::builder()
                 .method(Method::POST)
@@ -465,7 +465,12 @@ impl Moli {
         Ok(Self { port, cookie })
     }
 
-    async fn call(&self, method: Method, path: &str, body: &Json) -> anyhow::Result<(u16, Json)> {
+    pub(crate) async fn call(
+        &self,
+        method: Method,
+        path: &str,
+        body: &Json,
+    ) -> anyhow::Result<(u16, Json)> {
         let builder = http::Request::builder()
             .method(method)
             .uri(path)
@@ -522,7 +527,7 @@ impl Moli {
         }
     }
 
-    async fn close(self) {
+    pub(crate) async fn close(self) {
         let _ = self.call(Method::DELETE, "/api/session", &json!({})).await;
     }
 }

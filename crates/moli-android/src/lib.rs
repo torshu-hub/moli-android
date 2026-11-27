@@ -2,6 +2,7 @@
 //! and stops the official engine ([`moli_os::hosted`]), with no logic of its
 //! own; `Setup.java` is the integrations screen ([`setup`]).
 
+pub mod energy;
 pub mod journal;
 pub mod meross;
 pub mod netatmo;
@@ -254,6 +255,12 @@ fn call(action: &str, config: &Path, key: String, body: &str) -> anyhow::Result<
         "meross_rename" => plugs::rename(&serde_json::from_str(body)?)?.to_string(),
         "meross_installed" => plugs::installed(config, &serde_json::from_str(body)?)?.to_string(),
         "plug_remove" => plugs::take(&serde_json::from_str(body)?)?,
+        "energy" => energy::read(config)?,
+        "energy_put" => {
+            energy::put(config, body)?;
+            String::new()
+        }
+        "energy_points" => energy::points(config, &serde_json::from_str(body)?)?.to_string(),
         "network_scan" => network::scan(&serde_json::from_str(body)?)?.to_string(),
         other => anyhow::bail!("unknown action {other:?}"),
     })

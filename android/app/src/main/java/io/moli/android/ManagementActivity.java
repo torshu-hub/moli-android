@@ -163,6 +163,12 @@ public final class ManagementActivity extends Activity {
                 startActivity(new Intent(this, NetworkActivity.class))), other);
         root.addView(tiles, gap(12));
 
+        // The house's settings, one screen each (ETAT, mission 3).
+        LinearLayout settings = card();
+        settings.addView(text(getString(R.string.house_settings), 15, MUTED, true));
+        settings.addView(link(R.string.energy, () -> startActivity(new Intent(this, EnergyActivity.class))), gap(6));
+        root.addView(settings, gap(12));
+
         LinearLayout house = card();
         house.addView(text(getString(R.string.house_title), 15, MUTED, true));
         house.addView(link(R.string.backup, this::chooseBackup), gap(6));
