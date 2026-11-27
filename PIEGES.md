@@ -12,14 +12,11 @@
 - Le conteneur ne joint pas `dev.netatmo.com` ni `api.netatmo.com` (403 du proxy). → Lire l'API par pyatmo et l'intégration Home Assistant (`raw.githubusercontent.com/jabesq-org/pyatmo`, `…/home-assistant/core/dev/homeassistant/components/netatmo`).
 - Un Cargo.lock qui n'a pas le nouveau crate : `--locked` échoue. → `cargo metadata --offline` après avoir ajouté un crate ou une dépendance, et committer le Cargo.lock.
 - `leak-check.sh` refuse toute adresse MAC sauf `aa:bb:cc:dd:ee:NN` (même dans une fixture). → Les anonymiser ainsi.
-- Le test officiel d'heure de `moli-heating` échoue de 22 h à minuit UTC (le maintien s'arrête à minuit, il reste moins de 2 h). → Relancer après 00:00 UTC, pas avant.
 
 ## Git, GitHub, APK
 - Les PR sont fusionnées en squash : la branche locale diverge toujours de `main` ensuite (`git pull --ff-only` échoue), et la poussée forcée est refusée à l'agent. → Repartir de `origin/main` (`git checkout -B <branche> origin/main`), puis fusionner l'ancienne branche distante en gardant la version de `main` (`git fetch origin <branche> && git merge -s ours FETCH_HEAD`).
 - ETAT.md modifié en parallèle par une autre conversation : conflit. → Récupérer `main` juste avant d'éditer ETAT.md, et avant de fusionner.
 - Numéro d'APK : c'est le `run_number` du workflow `android` lancé par le push sur `main`, pas celui de la PR (les PR consomment aussi des numéros).
-- Pas de vérification de secours programmée (PROJET) : les événements de la PR suffisent.
-- Accès à l'ancien fork (`moli-os-android`) refusé à une session. → Ne pas en dépendre ; le dire dans le rapport.
 - Moli officiel (`rudy-io/moli-os`, public) : `add_repo` demande l'accord de l'utilisateur, mais git lit directement. → `git remote add upstream https://github.com/rudy-io/moli-os && git fetch upstream main`, puis `git merge upstream/main` (sans conflit quand l'officiel n'a pas bougé là où on a touché).
 - `create_pull_request` ne rend pas toujours le numéro de la PR. → `list_pull_requests` avant `subscribe_pr_activity` ; ne jamais le deviner.
 - Relancer un job en échec (`rerun_failed_jobs`) est refusé (403) tant que le run tourne encore. → Attendre la fin du run ; lire le journal d'un job par son `job_id` (`get_job_logs`).
