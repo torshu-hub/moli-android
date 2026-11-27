@@ -16,22 +16,22 @@ Une intégration propre, c'est une fonctionnalité complète et native de Moli O
 
 ## Principes
 1. Utiliser l'existant d'abord : mécanismes natifs de Moli, documentation du fournisseur, Home Assistant comme modèle de comportement. Un nouveau mécanisme seulement si l'existant ne peut pas faire la chose, et on le dit avant de coder.
-2. Aucune sécurité ajoutée sur mes propres actions. Je suis le seul utilisateur : ce que je déclenche volontairement n'a besoin ni de confirmation, ni de case « je confirme », ni de double vérification, ni d'armement, ni de permission par appareil, ni de restriction supplémentaire. Restent seulement ce que le fournisseur ou la plateforme impose (authentification, PIN exigé par l'API). Si un risque concret te semble justifier une protection, écris-le dans les cinq lignes d'avant le code, avec le risque précis, et j'arbitre. Ne l'ajoute pas d'office.
+2. Aucune sécurité ajoutée sur mes propres actions. Je suis le seul utilisateur : ce que je déclenche volontairement n'a besoin ni de confirmation, ni de case « je confirme », ni de double vérification, ni d'armement, ni de permission par appareil, ni de restriction supplémentaire. Restent seulement ce que le fournisseur ou la plateforme impose (authentification, PIN exigé par l'API). Si un risque concret te semble justifier une protection, écris-le avant de coder, avec le risque précis, et j'arbitre. Ne l'ajoute pas d'office.
 3. Rien d'anticipé. Chaque ligne répond à une demande. Quand on retire quelque chose, on retire le code, ses dépendances, ses tests et sa documentation.
 4. Honnêteté : préparé, transmis et exécuté sont distincts ; simulé et vérifié sur matériel aussi.
 5. Terminé = je l'ai essayé sur ma tablette. Des tests verts ne suffisent pas.
 6. Économie : concevoir le parcours avant de coder, ne pas refaire ce qui est validé.
 
 ## Travailler
-- Avant de coder : cinq lignes (ce que tu construis, ce que tu ne construis pas, quel mécanisme natif tu réutilises). Les publier dans la PR, puis poursuivre sans attendre ma réponse ; si je corrige, on ajuste.
-- Dans ces cinq lignes, une ligne obligatoire : « Écart à DECISIONS, à Moli officiel ou travail non demandé : aucun / lequel ». S'il y en a un, il attend mon accord avant d'être codé ; le reste avance.
+- Gros lot (nouveau mécanisme, nouvelle intégration, retouche de l'officiel) : avant de coder, cinq lignes (ce que tu construis, ce que tu ne construis pas, quel mécanisme natif tu réutilises). Les publier dans la PR, puis poursuivre sans attendre ma réponse ; si je corrige, on ajuste. Petit lot : pas de cinq lignes.
+- Tout lot, gros ou petit, a dans la PR une ligne « Écart à DECISIONS, à Moli officiel ou travail non demandé : aucun / lequel ». S'il y en a un, il attend mon accord avant d'être codé ; le reste avance.
 - Une conversation par mission : on repart d'ETAT.md, pas d'une conversation longue.
 - Ne jamais rester bloqué sur une question : je ne suis pas toujours là. Écrire la question dans le rapport, choisir la lecture la plus raisonnable, dire laquelle en tête du travail, et continuer. Seuls s'arrêtent les actes de la liste « À me demander » et les choix irréversibles : les préparer, les mettre de côté, et poursuivre les tâches indépendantes.
-- Anticiper mes validations. Dès les cinq lignes, lister d'un coup tout ce dont tu auras besoin de ma part pour aller au bout (accès, secrets, comptes de test, essais sur la tablette, accords de la liste « À me demander »), pour que je les donne en une fois. Ne redemander plus tard que ce qui n'était pas prévisible.
+- Anticiper mes validations. Si tu as besoin de quelque chose de ma part pour aller au bout (accès, secrets, comptes de test, essais sur la tablette, accords de la liste « À me demander »), le lister d'un coup dès le début, pour que je le donne en une fois ; ne redemander plus tard que ce qui n'était pas prévisible. Rien à demander : ne rien écrire.
 - Économiser les tokens : rien que la CI refait (pas de contrôle local en double), ce que je peux vérifier sur la tablette m'est laissé et listé dans le rapport, pas de vérification de secours programmée, pas d'attente ni de lecture inutile.
 - Après chaque nouvelle APK : son numéro, son lien direct cliquable (`releases/download/apk/moli-<numéro>.apk`) et le même lien dans un bloc à copier.
 - Lots courts, sur une branche, avec une PR ; s'arrêter au premier résultat visible. Tu fusionnes toi-même, je n'ai rien à faire sur GitHub. Contrôles : scripts/check.sh et la CI.
-- Rapport court dans la PR : ajouté, retiré, écarts avec Moli officiel, « rien d'anticipé ».
+- Rapport court dans la PR : ajouté, retiré, écarts avec Moli officiel.
 - État : un seul ETAT.md court (jalon, branche/PR, décisions actives, preuves, prochaine action).
 - Quand je lance ou change une mission : conseiller modèle et niveau de réflexion selon la difficulté et mon quota ; colorer seulement ce qui change.
 
