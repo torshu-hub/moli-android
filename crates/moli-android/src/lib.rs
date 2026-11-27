@@ -9,6 +9,7 @@ pub mod meross;
 pub mod netatmo;
 pub mod network;
 pub mod plugs;
+pub mod sections;
 pub mod setup;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -271,6 +272,14 @@ fn call(action: &str, config: &Path, key: String, body: &str) -> anyhow::Result<
         }
         "home_preview" => home::preview(config, body)?.to_string(),
         "home_house" => home::house(&serde_json::from_str(body)?)?.to_string(),
+        "sections" => {
+            sections::read(config, &serde_json::from_str::<Vec<String>>(body)?)?.to_string()
+        }
+        "sections_put" => {
+            sections::put(config, body)?;
+            String::new()
+        }
+        "sections_preview" => sections::preview(config, body)?.to_string(),
         "network_scan" => network::scan(&serde_json::from_str(body)?)?.to_string(),
         other => anyhow::bail!("unknown action {other:?}"),
     })

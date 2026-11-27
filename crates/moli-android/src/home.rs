@@ -247,8 +247,9 @@ fn kind(device: &Json) -> &'static str {
     }
 }
 
-/// The house as Moli runs it, for the screen's lists: `{"devices": [{id,
-/// name, room, kind, switches: [{point, label}]}], "rooms": [{name,
+/// The house as Moli runs it, for the screens' lists: `{"devices": [{id,
+/// name, room, kind, online, switches: [{point, label}], points: [{point,
+/// label, semantic, type, unit, writable, value}]}], "rooms": [{name,
 /// outside, added}]}` (the rooms as `/api/home` gives them: the outside
 /// decided, the rooms only the devices or the plan name added). Moli must run.
 pub fn house(request: &Session) -> anyhow::Result<Json> {
@@ -296,12 +297,31 @@ fn house_of(snapshot: &Json, home: Option<&Json>) -> Json {
                 Some(json!({ "point": format!("{id}/{key}"), "label": label }))
             })
             .collect();
+        let points: Vec<Json> = device["points"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| {
+                let key = p["key"].as_str()?;
+                Some(json!({
+                    "point": format!("{id}/{key}"),
+                    "label": text(&device["label"]["points"][key]).or_else(|| text(&p["label"])).unwrap_or(key),
+                    "semantic": p["semantic"],
+                    "type": p["kind"]["type"],
+                    "unit": p["unit"],
+                    "writable": p["access"]["write"].as_bool() == Some(true),
+                    "value": device["state"][key]["value"],
+                }))
+            })
+            .collect();
         devices.push(json!({
             "id": id,
             "name": name,
             "room": room,
             "kind": kind(device),
+            "online": device["online"],
             "switches": switches,
+            "points": points,
         }));
     }
     let rooms: Vec<Json> = home
