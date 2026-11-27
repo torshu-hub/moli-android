@@ -223,6 +223,29 @@ final class Look {
         return s;
     }
 
+    /**
+     * A screen's header, as the settings screens have it: back, its title,
+     * the sentence that says what it is for, then `actions` on the right.
+     */
+    LinearLayout header(String title, String about, View... actions) {
+        LinearLayout head = row();
+        ImageView back = icon(R.drawable.ic_arrow_back, INK, 26);
+        back.setPadding(dp(4), dp(4), dp(4), dp(4));
+        back.setLayoutParams(new LinearLayout.LayoutParams(dp(40), dp(40)));
+        touchable(back, round(PAGE, 20));
+        back.setContentDescription(a.getString(R.string.settings_back));
+        back.setOnClickListener(v -> a.onBackPressed());
+        head.addView(back);
+        LinearLayout titles = column();
+        titles.setPadding(dp(10), 0, dp(10), 0);
+        titles.addView(text(title, 24, INK, true));
+        if (about != null) titles.addView(text(about, 14, MUTED, false));
+        head.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        for (View action : actions) head.addView(action);
+        head.setLayoutParams(matchWrap(0, 0, 0, dp(12)));
+        return head;
+    }
+
     /** The title of a group of tiles. */
     TextView group(String value) {
         TextView t = text(value, 14, MUTED, true);
