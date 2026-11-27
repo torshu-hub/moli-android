@@ -9,6 +9,10 @@
 - Test officiel `a_valve_turned_by_hand_is_left_as_it_is_for_a_while` (moli-heating) rouge **tous les soirs de 22 h à minuit UTC** (23 h à 1 h en France l'hiver) : le maintien de 2 h qu'il attend est coupé au prochain pas du programme ou à minuit (reproduit en local sur `main`). → Relancer avant minuit UTC ne sert à rien : attendre minuit UTC, ne pas toucher au code officiel.
 - Clippy pédant refuse un sigle sans backticks dans la doc (`UPnP`, `SSDP`…). → Les écrire entre backticks.
 - Pas de SDK Android dans le conteneur : le Java ne se compile pas en local. → Le workflow `android` de la PR le vérifie (job `apk`).
+- Le conteneur ne joint pas `dev.netatmo.com` ni `api.netatmo.com` (403 du proxy). → Lire l'API par pyatmo et l'intégration Home Assistant (`raw.githubusercontent.com/jabesq-org/pyatmo`, `…/home-assistant/core/dev/homeassistant/components/netatmo`).
+- Un Cargo.lock qui n'a pas le nouveau crate : `--locked` échoue. → `cargo metadata --offline` après avoir ajouté un crate ou une dépendance, et committer le Cargo.lock.
+- `leak-check.sh` refuse toute adresse MAC sauf `aa:bb:cc:dd:ee:NN` (même dans une fixture). → Les anonymiser ainsi.
+- Le test officiel d'heure de `moli-heating` échoue de 22 h à minuit UTC (le maintien s'arrête à minuit, il reste moins de 2 h). → Relancer après 00:00 UTC, pas avant.
 
 ## Git, GitHub, APK
 - Les PR sont fusionnées en squash : la branche locale diverge toujours de `main` ensuite (`git pull --ff-only` échoue), et la poussée forcée est refusée à l'agent. → Repartir de `origin/main` (`git checkout -B <branche> origin/main`), puis fusionner l'ancienne branche distante en gardant la version de `main` (`git fetch origin <branche> && git merge -s ours FETCH_HEAD`).

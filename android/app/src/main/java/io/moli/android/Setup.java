@@ -1,6 +1,8 @@
 package io.moli.android;
 
 import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
 import java.io.File;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -153,6 +155,45 @@ final class Setup {
             call("store", path, key, new JSONObject().put("instance", instance).put("values", secrets).toString());
         call("put", path, "", change.toString());
         return restart(context, path);
+    }
+
+    /**
+     * Connects Netatmo (netatmo.rs): opens Netatmo's page in the browser,
+     * hears the redirection, keeps the tokens in the vault, then writes the
+     * block as `put` does. Null when Moli runs with it; else the reason, in
+     * words. `restarting` is told when the acceptance came and Moli restarts.
+     * Blocks until the person accepts (five minutes at most): never on the UI thread.
+     */
+    static String netatmoConnect(Context context, JSONObject change, String instance, JSONObject secrets, Runnable restarting) throws Exception {
+        String key = ProtectedKey.open(context)[0];
+        String path = config(context).getPath();
+        JSONObject body = new JSONObject().put("instance", instance)
+                .put("client_id", secrets.optString("client_id", ""))
+                .put("client_secret", secrets.optString("client_secret", ""));
+        JSONObject begun = new JSONObject(call("netatmo_begin", path, key, body.toString()));
+        try {
+            context.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(begun.getString("url")))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (RuntimeException noBrowser) {
+            call("netatmo_cancel", path, "", "");
+            throw noBrowser;
+        }
+        JSONObject heard = new JSONObject(call("netatmo_wait", path, key, instance));
+        String info = heard.optString("info");
+        switch (heard.optString("status")) {
+            case "connected": break;
+            case "denied": return context.getString(R.string.netatmo_denied, info);
+            case "refused": return context.getString(R.string.netatmo_refused, info);
+            case "timeout": return context.getString(R.string.netatmo_timeout);
+            default: return context.getString(R.string.netatmo_cancelled);
+        }
+        restarting.run();
+        return put(context, change, instance, new JSONObject());
+    }
+
+    /** The end of the journal of Moli and of the app (journal.rs). */
+    static String journal(Context context) throws Exception {
+        return call("journal", config(context).getPath(), "", "");
     }
 
     /** Removes one block, restarts Moli, then forgets its secrets. */

@@ -1,0 +1,18 @@
+{
+  "body": {
+    "home": {
+      "id": "home-heating",
+      "therm_mode": "schedule",
+      "rooms": [
+        {"id": "1", "reachable": true, "therm_measured_temperature": 20.4, "therm_setpoint_temperature": 19, "therm_setpoint_mode": "home", "heating_power_request": 0, "open_window": false},
+        {"id": 2, "reachable": true, "therm_measured_temperature": 18.2, "therm_setpoint_temperature": 20.5, "therm_setpoint_mode": "manual", "therm_setpoint_end_time": 1790000000, "heating_power_request": 40, "open_window": false}
+      ],
+      "modules": [
+        {"id": "aa:bb:cc:dd:ee:01", "type": "NAPlug", "firmware_revision": 174, "rf_strength": 71, "wifi_strength": 58},
+        {"id": "aa:bb:cc:dd:ee:02", "type": "NRV", "battery_state": "high", "battery_level": 3000, "firmware_revision": 79, "rf_strength": 62, "reachable": true, "bridge": "aa:bb:cc:dd:ee:01"},
+        {"id": "aa:bb:cc:dd:ee:03", "type": "NATherm1", "battery_state": "full", "battery_level": 4000, "firmware_revision": 65, "rf_strength": 55, "boiler_status": false, "reachable": true, "bridge": "aa:bb:cc:dd:ee:01"}
+      ]
+    }
+  },
+  "status": "ok"
+}

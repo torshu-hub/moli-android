@@ -1,0 +1,36 @@
+[integration]
+id = "netatmo"
+name = "Netatmo (thermostats, vannes, stations météo, qualité de l'air)"
+brands = ["Netatmo"]
+models = ["Smart Thermostat", "Smart Radiator Valve", "Smart Modulating Thermostat", "Weather Station", "Healthy Home Coach"]
+transport = "https"
+driver = "netatmo"
+crate = "moli-netatmo"
+
+[discovery]
+# Cloud only: Netatmo's devices answer to its servers, not on the home network.
+mdns = []
+ssdp = []
+ports = []
+
+[needs]
+secrets = ["client_id", "client_secret", "refresh_token"]
+vars = []
+options = []
+
+[origin]
+reused = "aucun code repris : points d'accès et noms de champs de l'API publique Netatmo (dev.netatmo.com), recoupés avec la bibliothèque pyatmo et l'intégration Netatmo de Home Assistant (lues, non copiées) ; réponses reconstituées puis anonymisées"
+author = "agent"
+
+# Replayed by the crate's tests (crates/moli-netatmo/src/model.rs, tests.rs).
+[[fixture]]
+file = "fixtures/energy-homesdata.json"
+
+[[fixture]]
+file = "fixtures/energy-homestatus.json"
+
+[[fixture]]
+file = "fixtures/weather-stationsdata.json"
+
+[[fixture]]
+file = "fixtures/homecoach-data.json"

@@ -220,6 +220,9 @@ public final class IntegrationsActivity extends Activity {
         Button board = flat(getString(R.string.setup_see_dashboard));
         board.setOnClickListener(v -> openDashboard("#/systeme"));
         house.addView(board, matchWrap(0, dp(4), 0, 0));
+        Button journal = flat(getString(R.string.journal_button));
+        journal.setOnClickListener(v -> showJournal());
+        house.addView(journal, matchWrap(0, dp(4), 0, 0));
         house.addView(note(getString(R.string.setup_added_elsewhere)));
     }
 
@@ -333,9 +336,11 @@ public final class IntegrationsActivity extends Activity {
     // ---- Changes ----
 
     /** Runs a change off the UI thread; Moli restarts meanwhile. */
-    void apply(String instance, Change change) {
+    void apply(String instance, Change change) { apply(instance, change, R.string.setup_restarting); }
+
+    void apply(String instance, Change change, int message) {
         busy = true;
-        banner.setText(R.string.setup_restarting);
+        banner.setText(message);
         banner.setBackground(round(INFO, 10));
         banner.setVisibility(View.VISIBLE);
         if (form != null) form.lock(true);
@@ -365,6 +370,39 @@ public final class IntegrationsActivity extends Activity {
     }
 
     interface Change { String run() throws Exception; }
+
+    /** What Moli and the app have said lately, to read, copy or send (DECISIONS 8). */
+    private void showJournal() {
+        work.execute(() -> {
+            String text;
+            try { text = Setup.journal(this); } catch (Exception unreadable) { text = String.valueOf(unreadable.getMessage()); }
+            String shown = text;
+            handler.post(() -> {
+                if (isDestroyed()) return;
+                TextView view = text(shown.isEmpty() ? getString(R.string.journal_empty) : shown, 11, INK, false);
+                view.setTypeface(Typeface.MONOSPACE);
+                view.setTextIsSelectable(true);
+                view.setPadding(dp(16), dp(8), dp(16), dp(8));
+                android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+                scroll.addView(view);
+                AlertDialog dialog = new AlertDialog.Builder(this)
+                        .setTitle(R.string.journal_title)
+                        .setView(scroll)
+                        .setPositiveButton(R.string.journal_copy, (d, w) -> {
+                            getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Moli", shown));
+                            android.widget.Toast.makeText(this, R.string.journal_copied, android.widget.Toast.LENGTH_SHORT).show();
+                        })
+                        .setNeutralButton(R.string.journal_share, (d, w) -> {
+                            Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, shown);
+                            startActivity(Intent.createChooser(send, getString(R.string.journal_title)));
+                        })
+                        .setNegativeButton(android.R.string.ok, null)
+                        .show();
+                // Latest lines first in view: the end.
+                scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+            });
+        });
+    }
 
     private void fail(String message) {
         banner.setText(getString(R.string.setup_failed, String.valueOf(message)));
@@ -645,6 +683,7 @@ public final class IntegrationsActivity extends Activity {
                 controls.add(remove);
             }
             panel.addView(actions, s.matchWrap(0, s.dp(18), 0, 0));
+            if ("netatmo".equals(pkg.optString("id"))) netatmo(side);
             guide(side);
             if (previous != null && !secrets.isEmpty()) markHeld();
         }
@@ -1211,7 +1250,7 @@ public final class IntegrationsActivity extends Activity {
         }
 
         private void copyText(String value, int done) {
-            screen.getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Meross", value));
+            screen.getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Moli", value));
             android.widget.Toast.makeText(screen, done, android.widget.Toast.LENGTH_SHORT).show();
         }
 
@@ -1285,11 +1324,12 @@ public final class IntegrationsActivity extends Activity {
 
         void lock(boolean on) { for (View v : controls) v.setEnabled(!on); if (id != null && previous != null) id.setEnabled(false); }
 
-        private void save() {
+        /** What the form says, checked: null (and the reason on the field) if it cannot be saved. */
+        private Prepared prepare() {
             IntegrationsActivity s = screen;
             String instance = id.getText().toString().trim();
-            if (instance.isEmpty() || instance.contains(":") || instance.contains("/")) { id.setError(s.getString(R.string.setup_instance_invalid)); return; }
-            if (!instance.equals(previous) && s.taken(instance)) { id.setError(s.getString(R.string.setup_instance_taken)); return; }
+            if (instance.isEmpty() || instance.contains(":") || instance.contains("/")) { id.setError(s.getString(R.string.setup_instance_invalid)); return null; }
+            if (!instance.equals(previous) && s.taken(instance)) { id.setError(s.getString(R.string.setup_instance_taken)); return null; }
             try {
                 JSONObject change = new JSONObject()
                         .put("id", instance)
@@ -1304,10 +1344,62 @@ public final class IntegrationsActivity extends Activity {
                 if (!other.isEmpty() && otherValue.getText().length() > 0) typed.put(other, otherValue.getText().toString());
                 for (java.util.Iterator<String> k = typed.keys(); k.hasNext(); )
                     if (typed.optString(k.next()).trim().isEmpty()) k.remove();
-                s.apply(instance, () -> Setup.put(s, change, instance, typed));
+                return new Prepared(instance, change, typed);
             } catch (org.json.JSONException impossible) {
                 throw new IllegalStateException(impossible);
             }
+        }
+
+        private static final class Prepared {
+            final String instance;
+            final JSONObject change, typed;
+            Prepared(String instance, JSONObject change, JSONObject typed) { this.instance = instance; this.change = change; this.typed = typed; }
+        }
+
+        private void save() {
+            IntegrationsActivity s = screen;
+            Prepared p = prepare();
+            if (p == null) return;
+            s.apply(p.instance, () -> Setup.put(s, p.change, p.instance, p.typed));
+        }
+
+        /**
+         * Netatmo (DECISIONS 6), as Home Assistant connects it: the person's
+         * own application, Netatmo's page where they accept, nothing to paste.
+         * The address to declare in that application is shown, to copy.
+         */
+        private void netatmo(LinearLayout side) {
+            IntegrationsActivity s = screen;
+            LinearLayout box = s.card();
+            side.addView(box, s.matchWrap(0, s.dp(12), 0, 0));
+            box.addView(s.text(s.getString(R.string.netatmo_title), 17, INK, true));
+            box.addView(s.text(s.getString(R.string.netatmo_explained), 14, MUTED, false), s.matchWrap(0, s.dp(4), 0, 0));
+            String redirect = "http://localhost:8791/netatmo";
+            TextView address = s.text(redirect, 15, INK, false);
+            address.setTypeface(Typeface.MONOSPACE);
+            address.setTextIsSelectable(true);
+            address.setPadding(s.dp(12), s.dp(10), s.dp(12), s.dp(10));
+            address.setBackground(s.stroke(PAGE, LINE, 10));
+            box.addView(address, s.matchWrap(0, s.dp(8), 0, 0));
+            LinearLayout actions = s.row();
+            Button copy = s.flat(s.getString(R.string.netatmo_copy));
+            copy.setOnClickListener(v -> copyText(redirect, R.string.netatmo_copied));
+            actions.addView(copy, new LinearLayout.LayoutParams(0, s.dp(48), 1));
+            Button connect = s.primary(s.getString(R.string.netatmo_connect));
+            connect.setOnClickListener(v -> connect());
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, s.dp(48), 1);
+            lp.setMargins(s.dp(12), 0, 0, 0);
+            actions.addView(connect, lp);
+            box.addView(actions, s.matchWrap(0, s.dp(12), 0, 0));
+            controls.add(connect);
+        }
+
+        private void connect() {
+            IntegrationsActivity s = screen;
+            Prepared p = prepare();
+            if (p == null) return;
+            Runnable restarting = () -> s.handler.post(() -> s.banner.setText(R.string.setup_restarting));
+            s.apply(p.instance, () -> Setup.netatmoConnect(s, p.change, p.instance, p.typed, restarting), R.string.netatmo_connecting);
         }
 
         private void remove() {

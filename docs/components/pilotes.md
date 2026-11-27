@@ -1937,6 +1937,31 @@ Au démarrage, `[sun]` est vérifié : au moins une façade, des `id` simples et
 - **Tests** : `src/model.rs` (fixtures anonymisées de `integrations/vicare/fixtures/`), `src/lib.rs`
   (PKCE, attente du quota).
 
+## `netatmo` : thermostats, vannes, stations météo, qualité de l'air (`crates/moli-netatmo`)
+
+- **Couvre** : le chauffage (un appareil par pièce aux points d'une vanne Zigbee2MQTT, un par maison
+  avec son mode et son programme, un par module avec batterie et signal) et l'information
+  (stations et modules extérieur, vent, pluie, intérieur, Healthy Home Coach). Pas les caméras :
+  c'est la PR officielle #331, dont le pilote partage les noms de secrets.
+- **Protocole** : le cloud Netatmo (`api.netatmo.com`, HTTPS seulement), sondé : pas de webhook,
+  Moli n'a pas d'adresse publique. Pièces toutes les 30 secondes (environ 120 appels par heure et par maison, pour 500 par heure et par compte, d'après l'ancien fork), stations toutes les 10 minutes,
+  composition des maisons toutes les 30 minutes. Après un refus pour trop d'appels (429 ou
+  erreur 26), le pilote se tait 5 minutes.
+- **Configuration** : `home_id` (seulement pour ne lire qu'une maison).
+- **Secrets** : `client_id`, `client_secret` (l'application Netatmo de la personne), `refresh_token`.
+  Le jeton d'accès dure 3 heures ; Netatmo remplace le `refresh_token` à chaque renouvellement : le
+  pilote range le nouveau dans le coffre **avant** de s'en servir (et réessaie si le coffre le refuse).
+  Seul un vrai `invalid_grant` l'efface, le pilote attend alors une reconnexion (`wait_for`) ; un
+  secret abîmé, un quota ou une panne réseau n'effacent rien.
+- **Commandes** : consigne (7 à 30 °C, mode manuel, durée par défaut de Netatmo), `system_mode`
+  (`auto` suit le programme, `heat` tient la consigne connue, `off` sauf pour une pièce de vannes
+  seules), `boost` (mode `max` ; une pièce de vannes seules prend 30 °C en manuel, comme Home
+  Assistant), mode de la maison (`schedule`, `away`, `hg`), programme choisi (clé `schedules` de
+  `homesdata`). Aucune confirmation ajoutée.
+- **Tests** : `src/model.rs` et `src/tests.rs` (fixtures anonymisées de
+  `integrations/netatmo/fixtures/`), `src/auth.rs` (jeton). Les noms de champs viennent de pyatmo et
+  de l'intégration Home Assistant ; non vérifiés sur un vrai compte.
+
 ## `synology` : NAS Synology, DSM (`crates/moli-synology`)
 
 - **Couvre** : l'état d'un NAS (température, processeur, mémoire, durée d'allumage), un appareil par
@@ -2053,6 +2078,7 @@ ni pièce native). Il ne déplace jamais rien. Sans argument : plan à blanc ; `
 | `solarman` | `moli-solarman` | V5 ou Modbus TCP sur TCP 8899, lecture seule | non | micro-onduleurs Deye 2 et 4 entrées ; Solis S6-GR1P (Modbus TCP) ; **pas encore** : TSUN TITAN et GEN4, ZCS Azzurro 1PH TL-V3 et HYD-ZSS-HP |
 | `jackery` | `moli-jackery` | MQTT local (broker de la maison), jeton de l'appli | `reserve` (5 à 49 %) | HomePower, 2 batteries, micrologiciel 1.6.0 : lecture ; écriture pas encore essayée |
 | `vicare` | `moli-vicare` | HTTPS, cloud Viessmann (deux hôtes fixes) | oui : modes, consignes, eau chaude | PAC Viessmann (régulation CU401B_S, passerelle Vitoconnect) |
+| `netatmo` | `moli-netatmo` | HTTPS, cloud Netatmo | oui : consigne, modes, programme, boost | à essayer (thermostats, vannes, stations) |
 | `synology` | `moli-synology` | HTTPS (5001), certificat épinglé, API web DSM | oui : réveil, arrêt, redémarrage | DS1019+ (DSM 7.4) ; `reboot` essayé, `shutdown` et `wake` non |
 | `proxmox` | `moli-proxmox` | HTTPS (8006), certificat épinglé, API REST, jeton `PVEAuditor` | non (lecture seule) | Proxmox VE 9.2, un nœud, LXC ; machines virtuelles et cluster pas encore |
 | `kasa` | `moli-kasa` | JSON sur TCP 9999, XOR, local | relais, voyant | HS110(EU) matériel 1.0 (lecture, relais, voyant) ; matériel 2 : pas encore |

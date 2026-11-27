@@ -199,4 +199,20 @@
     <string name="meross_in_house_help">Added by their address. Remove: the plug leaves the house, Moli keeps running; its name and history stay for its return.</string>
     <string name="meross_in_house_none">No Meross plug added by its address.</string>
     <string name="meross_in_house_no_moli">Moli does not answer: start it to remove a plug.</string>
+    <string name="netatmo_title">Connect to Netatmo</string>
+    <string name="netatmo_explained">As in Home Assistant: your application on dev.netatmo.com, then Netatmo\u2019s page where you accept. Type the application\u2019s client_id and client_secret above (leave refresh_token empty), declare the return address below in the application, then tap \u201cConnect\u201d. The connection then renews itself.</string>
+    <string name="netatmo_copy">Copy the address</string>
+    <string name="netatmo_copied">Address copied</string>
+    <string name="netatmo_connect">Connect to Netatmo</string>
+    <string name="netatmo_connecting">Netatmo: accept access in the page that just opened (5 minutes at most)\u2026</string>
+    <string name="netatmo_denied">Netatmo refused access (%1$s).</string>
+    <string name="netatmo_refused">Netatmo refused the code (%1$s). Check the client_id, the client_secret and the return address declared in the application.</string>
+    <string name="netatmo_timeout">No answer from Netatmo in 5 minutes: the connection is dropped.</string>
+    <string name="netatmo_cancelled">Connection cancelled.</string>
+    <string name="journal_button">Moli journal</string>
+    <string name="journal_title">Moli journal</string>
+    <string name="journal_empty">The journal is empty.</string>
+    <string name="journal_copy">Copy</string>
+    <string name="journal_share">Share</string>
+    <string name="journal_copied">Journal copied</string>
 </resources>

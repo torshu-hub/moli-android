@@ -200,4 +200,20 @@
     <string name="meross_in_house_help">Ajoutées par leur adresse. Retirer : la prise sort de la maison, Moli continue ; son nom et son historique restent pour son retour.</string>
     <string name="meross_in_house_none">Aucune prise Meross ajoutée par son adresse.</string>
     <string name="meross_in_house_no_moli">Moli ne répond pas : démarrez-le pour retirer une prise.</string>
+    <string name="netatmo_title">Connexion à Netatmo</string>
+    <string name="netatmo_explained">Comme dans Home Assistant : votre application sur dev.netatmo.com, puis la page de Netatmo où vous acceptez. Saisissez ci-dessus le client_id et le client_secret de l’application (laissez refresh_token vide), déclarez dans l’application l’adresse de retour ci-dessous, puis touchez « Se connecter ». La connexion se renouvelle ensuite seule.</string>
+    <string name="netatmo_copy">Copier l’adresse</string>
+    <string name="netatmo_copied">Adresse copiée</string>
+    <string name="netatmo_connect">Se connecter à Netatmo</string>
+    <string name="netatmo_connecting">Netatmo : acceptez l’accès dans la page qui vient de s’ouvrir (5 minutes au plus)…</string>
+    <string name="netatmo_denied">Netatmo a refusé l’accès (%1$s).</string>
+    <string name="netatmo_refused">Netatmo a refusé le code (%1$s). Vérifiez le client_id, le client_secret et l’adresse de retour déclarée dans l’application.</string>
+    <string name="netatmo_timeout">Pas de réponse de Netatmo en 5 minutes : la connexion est abandonnée.</string>
+    <string name="netatmo_cancelled">Connexion annulée.</string>
+    <string name="journal_button">Journal de Moli</string>
+    <string name="journal_title">Journal de Moli</string>
+    <string name="journal_empty">Le journal est vide.</string>
+    <string name="journal_copy">Copier</string>
+    <string name="journal_share">Partager</string>
+    <string name="journal_copied">Journal copié</string>
 </resources>
