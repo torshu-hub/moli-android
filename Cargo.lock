@@ -1680,6 +1680,7 @@ dependencies = [
  "http",
  "jni",
  "md-5",
+ "moli-energy",
  "moli-net",
  "moli-os",
  "moli-profile",

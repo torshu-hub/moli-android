@@ -8,9 +8,9 @@
 - Tests Matter vendus en échec dans le conteneur (erreur 97, pas d'IPv6). → Propre au conteneur, rien à corriger.
 - Test officiel `a_valve_turned_by_hand_is_left_as_it_is_for_a_while` (moli-heating) rouge **tous les soirs de 22 h à minuit UTC** (23 h à 1 h en France l'hiver) : le maintien de 2 h qu'il attend est coupé au prochain pas du programme ou à minuit (reproduit en local sur `main`). → Relancer avant minuit UTC ne sert à rien : attendre minuit UTC, ne pas toucher au code officiel.
 - Clippy pédant refuse un sigle sans backticks dans la doc (`UPnP`, `SSDP`…). → Les écrire entre backticks.
-- Pas de SDK Android dans le conteneur : le Java ne se compile pas en local. → Le workflow `android` de la PR le vérifie (job `apk`).
+- Pas de SDK Android dans le conteneur : le Java ne se compile pas en local. → Le job `apk` le vérifie ; contrôle rapide possible avant : `javac` contre `com/google/android/android/4.1.1.4` et `org/json/json` (Maven Central), un `R.java` généré et des stubs des classes voisines (ignorer les API plus récentes que ce jar : `isDestroyed`, `setElevation`…).
 - Le conteneur ne joint pas `dev.netatmo.com` ni `api.netatmo.com` (403 du proxy). → Lire l'API par pyatmo et l'intégration Home Assistant (`raw.githubusercontent.com/jabesq-org/pyatmo`, `…/home-assistant/core/dev/homeassistant/components/netatmo`).
-- Un Cargo.lock qui n'a pas le nouveau crate : `--locked` échoue. → `cargo metadata --offline` après avoir ajouté un crate ou une dépendance, et committer le Cargo.lock.
+- Un Cargo.lock qui n'a pas le nouveau crate : `--locked` échoue. → `cargo metadata` après avoir ajouté un crate ou une dépendance (`--offline` échoue si le registre n'est pas encore en cache), et committer le Cargo.lock.
 - `leak-check.sh` refuse toute adresse MAC sauf `aa:bb:cc:dd:ee:NN` (même dans une fixture). → Les anonymiser ainsi.
 
 ## Git, GitHub, APK

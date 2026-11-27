@@ -120,7 +120,7 @@ pub fn catalogue() -> String {
     Json::Array(list).to_string()
 }
 
-fn read(config: &Path) -> anyhow::Result<DocumentMut> {
+pub(crate) fn read(config: &Path) -> anyhow::Result<DocumentMut> {
     let text = match std::fs::read_to_string(config) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -334,7 +334,7 @@ fn previous(config: &Path) -> PathBuf {
 }
 
 /// Writes the new file whole (never half), the previous one kept aside.
-fn write(config: &Path, doc: &DocumentMut) -> anyhow::Result<()> {
+pub(crate) fn write(config: &Path, doc: &DocumentMut) -> anyhow::Result<()> {
     if config.exists() {
         std::fs::copy(config, previous(config)).context("cannot keep the previous moli.toml")?;
     }
