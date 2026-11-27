@@ -1233,5 +1233,8 @@
   "pilotes.netatmo.point_inconnu": "point inconnu : {point}",
   "pilotes.netatmo.appareil_inconnu": "appareil inconnu de Netatmo",
   "pilotes.netatmo.consigne_inconnue": "la consigne de la pièce n'est pas encore connue",
-  "pilotes.netatmo.valeur_inconnue": "valeur inconnue : {value}"
+  "pilotes.netatmo.valeur_inconnue": "valeur inconnue : {value}",
+  "pilotes.offpeak.periode": "Période tarifaire",
+  "pilotes.offpeak.modele": "Heures creuses",
+  "pilotes.offpeak.point": "Période (HP / HC)"
 }

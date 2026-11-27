@@ -260,6 +260,8 @@ fn call(action: &str, config: &Path, key: String, body: &str) -> anyhow::Result<
             energy::put(config, body)?;
             String::new()
         }
+        "energy_preview" => energy::preview(config, body)?.to_string(),
+        "energy_price" => energy::price(&serde_json::from_str(body)?)?,
         "energy_points" => energy::points(config, &serde_json::from_str(body)?)?.to_string(),
         "network_scan" => network::scan(&serde_json::from_str(body)?)?.to_string(),
         other => anyhow::bail!("unknown action {other:?}"),

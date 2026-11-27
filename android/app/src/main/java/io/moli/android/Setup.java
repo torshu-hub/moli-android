@@ -191,20 +191,26 @@ final class Setup {
         return put(context, change, instance, new JSONObject());
     }
 
-    /** The house's `[energy]` section, as JSON (energy.rs): `{}` when it has none. */
+    /**
+     * The house's `[energy]` section and off-peak hours (energy.rs `read`):
+     * `{section, offpeak: [...], offpeak_point}`.
+     */
     static JSONObject energy(Context context) throws Exception {
         return new JSONObject(call("energy", config(context).getPath(), "", ""));
     }
 
     /**
-     * Writes the whole `[energy]` section (`{}` takes it out) once the
-     * official check accepts it, then restarts Moli as `put` does. Null when
+     * Writes the whole `[energy]` section (`{}` takes it out) and the
+     * off-peak hours (null: left as they are; empty: taken out) once the
+     * official checks accept them, then restarts Moli as `put` does. Null when
      * Moli runs with it; else the reason, and the house is as it was.
      */
-    static String energyPut(Context context, JSONObject section) throws Exception {
+    static String energyPut(Context context, JSONObject section, JSONArray offpeak) throws Exception {
         String path = config(context).getPath();
+        JSONObject body = new JSONObject().put("section", section);
+        if (offpeak != null) body.put("offpeak", offpeak);
         try {
-            call("energy_put", path, "", section.toString());
+            call("energy_put", path, "", body.toString());
         } catch (IllegalStateException refused) {
             // Refused by the check: nothing written, Moli left running.
             return String.valueOf(refused.getMessage());
@@ -214,9 +220,31 @@ final class Setup {
     }
 
     /**
-     * The house's points to choose from, and the plugs no meter follows
+     * « Voir ce qui sera écrit » (energy.rs `preview`): `{before, after,
+     * error}`, the screen's part of moli.toml now and once written. Writes nothing.
+     */
+    static JSONObject energyPreview(Context context, JSONObject section, JSONArray offpeak) throws Exception {
+        JSONObject body = new JSONObject().put("section", section);
+        if (offpeak != null) body.put("offpeak", offpeak);
+        return new JSONObject(call("energy_preview", config(context).getPath(), "", body.toString()));
+    }
+
+    /**
+     * « Prix unique »: the house's price of a kWh, as the dashboard's card
+     * sets it (Moli running). Null when done; else Moli's reason.
+     */
+    static String energyPrice(Context context, double price) throws Exception {
+        String pin = ProtectedKey.open(context)[1];
+        String body = new JSONObject().put("port", MoliService.port).put("pin", pin).put("price", price).toString();
+        String refused = call("energy_price", config(context).getPath(), "", body);
+        return refused.isEmpty() ? null : refused;
+    }
+
+    /**
+     * The house's points, what measures, and the house's price of a kWh
      * (energy.rs `points`): `{points: [{id, device, name, label, unit,
-     * family, value}], suggested: [{device, name, point}]}`. Moli must run.
+     * family, value}], measuring: [{device, name, room, point, family,
+     * value, unit, guess, followed}], house_price}`. Moli must run.
      */
     static JSONObject energyPoints(Context context) throws Exception {
         String pin = ProtectedKey.open(context)[1];

@@ -130,7 +130,7 @@ pub(crate) fn read(config: &Path) -> anyhow::Result<DocumentMut> {
         .with_context(|| format!("{} is not valid TOML", config.display()))
 }
 
-fn blocks(doc: &DocumentMut) -> Option<&ArrayOfTables> {
+pub(crate) fn blocks(doc: &DocumentMut) -> Option<&ArrayOfTables> {
     doc.get("driver").and_then(Item::as_array_of_tables)
 }
 
@@ -281,17 +281,23 @@ fn position(doc: &DocumentMut, id: &str) -> Option<usize> {
 
 /// Adds or replaces one block (the others, and the comments, stay as they are).
 pub fn put(config: &Path, change: &Change) -> anyhow::Result<()> {
+    let mut doc = read(config)?;
+    put_block(&mut doc, change)?;
+    write(config, &doc)
+}
+
+/// [`put`] on a document already read (one write for several changes).
+pub(crate) fn put_block(doc: &mut DocumentMut, change: &Change) -> anyhow::Result<()> {
     let id = change.id.trim();
     if id.is_empty() || id.contains([':', '/']) {
         bail!("invalid driver id {id:?}");
     }
     let package = entry(&change.integration).context("unknown integration")?;
-    let mut doc = read(config)?;
     let at = match &change.previous {
-        Some(previous) => Some(position(&doc, previous).context("this block is gone")?),
+        Some(previous) => Some(position(doc, previous).context("this block is gone")?),
         None => None,
     };
-    if position(&doc, id).is_some_and(|other| Some(other) != at) {
+    if position(doc, id).is_some_and(|other| Some(other) != at) {
         bail!("driver id {id:?} is taken");
     }
     let new = block(change, package)?;
@@ -312,13 +318,19 @@ pub fn put(config: &Path, change: &Change) -> anyhow::Result<()> {
             .context("`driver` is not a list of [[driver]] blocks")?
             .push(new);
     }
-    write(config, &doc)
+    Ok(())
 }
 
 /// Removes one block.
 pub fn remove(config: &Path, id: &str) -> anyhow::Result<()> {
     let mut doc = read(config)?;
-    let at = position(&doc, id).context("this block is gone")?;
+    remove_block(&mut doc, id)?;
+    write(config, &doc)
+}
+
+/// [`remove`] on a document already read.
+pub(crate) fn remove_block(doc: &mut DocumentMut, id: &str) -> anyhow::Result<()> {
+    let at = position(doc, id).context("this block is gone")?;
     let list = doc["driver"]
         .as_array_of_tables_mut()
         .context("`driver` is not a list of [[driver]] blocks")?;
@@ -326,7 +338,7 @@ pub fn remove(config: &Path, id: &str) -> anyhow::Result<()> {
     if list.is_empty() {
         doc.remove("driver");
     }
-    write(config, &doc)
+    Ok(())
 }
 
 fn previous(config: &Path) -> PathBuf {
