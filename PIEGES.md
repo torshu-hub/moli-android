@@ -6,7 +6,7 @@
 - `web/dist` absent : `moli-api` ne compile pas (`Dist::get` introuvable). → `mkdir -p web/dist`, ou passer par `scripts/check.sh` qui le crée.
 - Première compilation longue (plus de 10 min). → Tester seulement le paquet touché (`cargo test -p moli-android`) ; la CI fait le reste (PROJET : pas de contrôle en double).
 - Tests Matter vendus en échec dans le conteneur (erreur 97, pas d'IPv6). → Propre au conteneur, rien à corriger.
-- Test officiel `a_valve_turned_by_hand_is_left_as_it_is_for_a_while` (moli-heating) rouge selon l'heure. → Relancer le job une fois, ne pas toucher au code officiel.
+- Test officiel `a_valve_turned_by_hand_is_left_as_it_is_for_a_while` (moli-heating) rouge **tous les soirs de 22 h à minuit UTC** (23 h à 1 h en France l'hiver) : le maintien de 2 h qu'il attend est coupé au prochain pas du programme ou à minuit (reproduit en local sur `main`). → Relancer avant minuit UTC ne sert à rien : attendre minuit UTC, ne pas toucher au code officiel.
 - Clippy pédant refuse un sigle sans backticks dans la doc (`UPnP`, `SSDP`…). → Les écrire entre backticks.
 - Pas de SDK Android dans le conteneur : le Java ne se compile pas en local. → Le workflow `android` de la PR le vérifie (job `apk`).
 
