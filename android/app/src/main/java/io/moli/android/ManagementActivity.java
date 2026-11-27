@@ -159,6 +159,7 @@ public final class ManagementActivity extends Activity {
         List<View> security = new ArrayList<>();
         security.add(screen("guard", R.drawable.ic_shield, Look.BLUE, R.string.guard_screen, GuardActivity.class, ""));
         security.add(screen("mcp", R.drawable.ic_smart_toy, Look.BLUE, R.string.mcp_screen, McpActivity.class, ""));
+        security.add(screen("server", R.drawable.ic_dns, Look.BLUE, R.string.server_screen, ServerActivity.class, ""));
         page.addView(ui.grid(security, columns));
 
         page.addView(ui.group(getString(R.string.group_assistant)));
@@ -283,6 +284,7 @@ public final class ManagementActivity extends Activity {
             now.put("guard", guardSummary());
             now.put("mcp", mcpSummary());
             now.put("assistant", assistantSummary());
+            now.put("server", serverSummary());
             handler.post(() -> {
                 if (isDestroyed()) return;
                 for (java.util.Map.Entry<String, String> e : now.entrySet()) {
@@ -323,6 +325,15 @@ public final class ManagementActivity extends Activity {
         if (q != null) parts.add(getString(R.string.guard_summary_quiet, q.optString("from"), q.optString("to")));
         if (g != null && "pin".equals(g.optString("dashboard"))) parts.add(getString(R.string.guard_summary_pin));
         return parts.isEmpty() ? getString(R.string.guard_summary_none) : String.join(" · ", parts);
+    }
+
+    /** « Europe/Paris · historique 30 j ». */
+    private String serverSummary() {
+        JSONObject s;
+        try { s = Setup.sections(this, "server").optJSONObject("sections").optJSONObject("server"); } catch (Exception unreadable) { return null; }
+        if (s == null) s = new JSONObject();
+        String zone = s.optString("timezone", java.util.TimeZone.getDefault().getID());
+        return zone + " · " + getString(R.string.server_history).toLowerCase(java.util.Locale.getDefault()) + " " + s.optInt("history_days", 30) + " " + getString(R.string.server_days);
     }
 
     /** « gpt-4.1-mini », or « Désactivé ». */
