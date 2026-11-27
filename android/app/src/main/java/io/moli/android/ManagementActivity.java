@@ -50,8 +50,8 @@ public final class ManagementActivity extends Activity {
     private View dot;
     private Button power, open;
     /** The tiles' lines that Moli and the files fill, and what they last said (kept when the page is rebuilt). */
-    private TextView integrationsLine, energyLine, backupLine;
-    private String integrationsText, energyText;
+    private TextView integrationsLine, homeLine, energyLine, backupLine;
+    private String integrationsText, homeText, energyText;
 
     private TextView summary(String words) {
         TextView t = new TextView(this);
@@ -130,6 +130,7 @@ public final class ManagementActivity extends Activity {
 
         int columns = ui.columns();
         integrationsLine = summary(integrationsText == null ? getString(R.string.integrations_help) : integrationsText);
+        homeLine = summary(homeText == null ? "" : homeText);
         energyLine = summary(energyText == null ? "" : energyText);
         backupLine = summary(lastBackup());
         page.addView(ui.group(getString(R.string.group_devices)));
@@ -142,6 +143,8 @@ public final class ManagementActivity extends Activity {
 
         page.addView(ui.group(getString(R.string.group_house)));
         List<View> house = new ArrayList<>();
+        house.add(ui.tile(R.drawable.ic_weekend, Look.AMBER, getString(R.string.home_screen), homeLine,
+                () -> startActivity(new Intent(this, HomeActivity.class))));
         house.add(ui.tile(R.drawable.ic_bolt, Look.AMBER, getString(R.string.energy), energyLine,
                 () -> startActivity(new Intent(this, EnergyActivity.class))));
         page.addView(ui.grid(house, columns));
@@ -253,10 +256,12 @@ public final class ManagementActivity extends Activity {
         boolean serving = answered;
         probe.execute(() -> {
             String integrations = integrationsSummary(serving ? IntegrationsActivity.health(port) : null);
+            String home = homeSummary();
             String energy = energySummary();
             handler.post(() -> {
                 if (isDestroyed()) return;
                 if (integrations != null) integrationsLine.setText(integrationsText = integrations);
+                if (home != null) homeLine.setText(homeText = home);
                 if (energy != null) energyLine.setText(energyText = energy);
             });
         });
@@ -281,6 +286,21 @@ public final class ManagementActivity extends Activity {
         if (live == null) return head;
         return head + " · " + (silent == 0 ? getString(R.string.integrations_all_fine)
                 : getResources().getQuantityString(R.plurals.integrations_silent, silent, silent));
+    }
+
+    /** « 6 pièces · 2 étages », or « Pas encore réglé ». */
+    private String homeSummary() {
+        JSONObject layout;
+        try { layout = Setup.home(this).optJSONObject("layout"); } catch (Exception unreadable) { return null; }
+        JSONArray rooms = layout == null ? null : layout.optJSONArray("rooms");
+        if (rooms == null || rooms.length() == 0) return getString(R.string.not_set_yet);
+        java.util.Set<String> floors = new java.util.HashSet<>();
+        for (int i = 0; i < rooms.length(); i++) {
+            JSONObject r = rooms.optJSONObject(i);
+            if (r != null && !r.optString("floor").isEmpty()) floors.add(r.optString("floor"));
+        }
+        String out = getResources().getQuantityString(R.plurals.home_summary_rooms, rooms.length(), rooms.length());
+        return floors.isEmpty() ? out : out + " · " + getResources().getQuantityString(R.plurals.home_summary_floors, floors.size(), floors.size());
     }
 
     /** « Heures pleines / creuses · 4 appareils suivis », or « Pas encore réglé ». */

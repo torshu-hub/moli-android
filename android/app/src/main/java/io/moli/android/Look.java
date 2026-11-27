@@ -200,6 +200,29 @@ final class Look {
         return t;
     }
 
+    /** A pill to choose with: filled when chosen. */
+    TextView chip(String value, boolean chosen, Runnable action) {
+        TextView c = text(value, 14, chosen ? Color.WHITE : INK, chosen);
+        c.setPadding(dp(14), dp(8), dp(14), dp(8));
+        c.setGravity(Gravity.CENTER);
+        touchable(c, chosen ? round(ACCENT, 18) : stroke(CARD, LINE, 18));
+        c.setOnClickListener(v -> action.run());
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        p.setMargins(0, 0, dp(8), dp(8));
+        c.setLayoutParams(p);
+        return c;
+    }
+
+    /** Pills side by side, scrolled sideways when they do not fit. */
+    View chips(java.util.List<View> pills) {
+        LinearLayout line = row();
+        for (View p : pills) line.addView(p);
+        android.widget.HorizontalScrollView s = new android.widget.HorizontalScrollView(a);
+        s.setHorizontalScrollBarEnabled(false);
+        s.addView(line);
+        return s;
+    }
+
     /** The title of a group of tiles. */
     TextView group(String value) {
         TextView t = text(value, 14, MUTED, true);
