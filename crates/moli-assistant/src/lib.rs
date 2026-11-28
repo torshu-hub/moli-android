@@ -4304,6 +4304,7 @@ mod tests {
             price_now: None,
             period_point: None,
             meters: vec![meter("g", "Linky", Role::Grid, "linky/index", None, None)],
+            breakers: Vec::new(),
             live: None,
             flows: None,
             battery: None,
