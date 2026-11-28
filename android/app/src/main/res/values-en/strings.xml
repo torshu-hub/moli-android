@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="state_stopped">Stopped</string>
-    <string name="state_starting">Starting…</string>
-    <string name="state_stopping">Stopping…</string>
-    <string name="state_running">Running, port %1$d</string>
-    <string name="state_failed">Error: %1$s</string>
+    <string name="state_stopped">Moli is stopped</string>
+    <string name="state_starting">Moli is starting…</string>
+    <string name="state_stopping">Moli is stopping…</string>
+    <string name="state_running">Moli is running</string>
+    <string name="state_failed">Moli stopped: %1$s</string>
     <string name="start">Start</string>
     <string name="stop">Stop</string>
     <string name="open_dashboard">Open Moli</string>
@@ -187,8 +187,7 @@
     <string name="meross_remove_elsewhere">This plug was not added through « Add a device » (it is written in moli.toml), or is gone.</string>
     <string name="meross_remove_failed">Could not remove it: %1$s</string>
     <string name="integrations_help">Add, set up, remove</string>
-    <string name="network_help">The devices on the network</string>
-    <string name="house_title">The house</string>
+    <string name="network_help">What answers on the network, with its address</string>
     <string name="direct_launch">Open Moli at launch</string>
     <string name="direct_launch_help">The app opens straight on Moli. Back from its first page returns here.</string>
     <string name="meross_ghost">“%1$s”: old device, no longer answering.</string>
@@ -215,7 +214,6 @@
     <string name="journal_copy">Copy</string>
     <string name="journal_share">Share</string>
     <string name="journal_copied">Journal copied</string>
-    <string name="house_settings">House settings</string>
     <string name="energy">Energy</string>
     <string name="energy_reading">Reading the house’s settings…</string>
     <string name="energy_unsaved">Unsaved changes</string>
@@ -312,4 +310,32 @@
     <string name="energy_preview_price">Single price: %1$s €/kWh, kept by Moli like the « Price per kWh » card (outside moli.toml).</string>
     <string name="energy_required">Required</string>
     <string name="energy_number_invalid">A number (0.2016)</string>
+    <string name="home_address">From another screen of the house: %1$s</string>
+    <string name="home_address_copied">%1$s copied</string>
+    <string name="group_devices">Devices</string>
+    <string name="group_house">The house</string>
+    <string name="group_tablet">This tablet</string>
+    <string name="integrations_none">None yet: add one</string>
+    <plurals name="integrations_count">
+        <item quantity="one">%d integration</item>
+        <item quantity="other">%d integrations</item>
+    </plurals>
+    <string name="integrations_all_fine">all answering</string>
+    <plurals name="integrations_silent">
+        <item quantity="one">%d not answering</item>
+        <item quantity="other">%d not answering</item>
+    </plurals>
+    <string name="not_set_yet">Not set yet</string>
+    <string name="energy_summary_peak">Peak / off-peak hours</string>
+    <string name="energy_summary_some">Set</string>
+    <plurals name="energy_summary_followed">
+        <item quantity="one">%d device followed</item>
+        <item quantity="other">%d devices followed</item>
+    </plurals>
+    <string name="backup_help">The whole house in a .zip file</string>
+    <string name="backup_last">Last: %1$s</string>
+    <string name="restore_help">From a .zip backup</string>
+    <string name="key_help">To keep apart, with the backup</string>
+    <string name="key_none">No house yet: start Moli to choose its code.</string>
+    <string name="journal_help">What Moli just did, to copy or share</string>
 </resources>

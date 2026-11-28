@@ -1,0 +1,6 @@
+Moli OS Android — third-party material in android/
+
+The app's icons (app/src/main/res/drawable/ic_*.xml, except ic_moli.xml) are
+Material Symbols Rounded (https://github.com/google/material-design-icons),
+converted to Android vector drawables. Copyright Google LLC. Licensed under
+the Apache License, Version 2.0; see ../LICENSE.
