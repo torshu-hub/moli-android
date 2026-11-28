@@ -102,9 +102,11 @@ public final class EnergyActivity extends Activity {
         super.onCreate(state);
         getWindow().getDecorView().setBackgroundColor(Look.PAGE);
         LinearLayout root = ui.column();
-        root.setPadding(ui.dp(20), ui.dp(20), ui.dp(20), 0);
+        root.setPadding(ui.dp(20), ui.dp(12), ui.dp(20), 0);
+        root.addView(ui.header(getString(R.string.energy), getString(R.string.energy_about)));
         boolean house = Setup.config(this).exists() && ProtectedKey.exists(this);
         root.addView(ui.note(getString(house ? R.string.energy_reading : R.string.setup_no_house)));
+        ui.edgeToEdge(root);
         setContentView(root);
         if (house) load();
     }
@@ -131,8 +133,10 @@ public final class EnergyActivity extends Activity {
             } catch (Exception failure) {
                 handler.post(() -> {
                     LinearLayout root = ui.column();
-                    root.setPadding(ui.dp(20), ui.dp(20), ui.dp(20), 0);
+                    root.setPadding(ui.dp(20), ui.dp(12), ui.dp(20), 0);
+                    root.addView(ui.header(getString(R.string.energy), getString(R.string.energy_about)));
                     root.addView(ui.note(getString(R.string.setup_failed, String.valueOf(failure.getMessage()))));
+                    ui.edgeToEdge(root);
                     setContentView(root);
                 });
             }
@@ -260,10 +264,10 @@ public final class EnergyActivity extends Activity {
         boolean wide = getResources().getConfiguration().screenWidthDp >= 720;
         LinearLayout root = ui.column();
         root.setPadding(ui.dp(20), ui.dp(12), ui.dp(20), 0);
+        root.addView(ui.header(getString(R.string.energy), getString(R.string.energy_about)));
 
         LinearLayout head = ui.row();
         LinearLayout titles = ui.column();
-        titles.addView(ui.text(getString(R.string.energy), 24, Look.INK, true));
         unsaved = ui.text(getString(R.string.energy_unsaved), 13, Look.WARN, true);
         unsaved.setVisibility(View.GONE);
         titles.addView(unsaved);
@@ -303,6 +307,7 @@ public final class EnergyActivity extends Activity {
         }
         ScrollView scroll = ui.scroll(panes);
         root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        ui.edgeToEdge(root);
         setContentView(root);
         refreshWithin();
     }
@@ -514,6 +519,7 @@ public final class EnergyActivity extends Activity {
         if (rows.isEmpty()) card.addView(ui.note(getString(points == null ? R.string.energy_no_moli : R.string.energy_nothing_measures)));
         for (Row r : rows) card.addView(row(r, wide));
         TextView whole = ui.note(getString(R.string.energy_no_whole_house));
+        whole.setTextColor(Look.WARN);
         whole.setTag("whole");
         card.addView(whole);
         Button page = ui.flat(getString(R.string.energy_open_page));
@@ -603,11 +609,13 @@ public final class EnergyActivity extends Activity {
         assignIds();
         List<Row> circuits = new ArrayList<>();
         for (Row r : rows) if (r.box != null && r.box.isChecked() && ("circuit".equals(kindOf(r)) || "total".equals(kindOf(r)))) circuits.add(r);
-        boolean whole = false;
+        boolean whole = false, any = false;
         for (Row r : rows) {
             if (r.box == null) continue;
             String k = kindOf(r);
-            if (r.box.isChecked() && ("grid".equals(k) || "total".equals(k))) whole = true;
+            any |= r.box.isChecked();
+            // The page's total: the whole house's meter, else the sum of the circuits (moli-energy report.rs).
+            if (r.box.isChecked() && ("grid".equals(k) || "total".equals(k) || "circuit".equals(k))) whole = true;
             int at = r.withinChoice.getSelectedItemPosition();
             String keep = at > 0 && at < r.withinIds.size() ? r.withinIds.get(at) : (r.withinIds.isEmpty() ? r.within : "");
             r.withinIds.clear();
@@ -625,7 +633,7 @@ public final class EnergyActivity extends Activity {
             r.kindChoice.setEnabled(r.box.isChecked());
         }
         View note = getWindow().getDecorView().findViewWithTag("whole");
-        if (note != null) note.setVisibility(whole ? View.GONE : View.VISIBLE);
+        if (note != null) note.setVisibility(whole || !any ? View.GONE : View.VISIBLE);
     }
 
     /** A row's details: the name shown, the measure used, a price of its own. */

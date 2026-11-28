@@ -86,6 +86,9 @@ Java contre l'API 34 (PIEGES) en plus du job `apk`.
 
 ## Ordre des lots
 
+Tous livrés le 28 nov. (PR #44 à #52) ; essais du propriétaire à venir.
+
+
 1. **Accueil** : la navigation de toute la refonte, groupes et résumés vivants, adresse de Moli
    sur le réseau, Journal accessible depuis l'accueil, icônes. Tout le reste s'y accroche.
 2. **Pièces et affichage** (`home.json`) : pièces (ordre, icône, étage, dedans / dehors, autres

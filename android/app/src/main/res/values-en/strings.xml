@@ -249,7 +249,7 @@
     <string name="energy_followed">What Moli follows</string>
     <string name="energy_followed_help">Tick what Moli should count, say what it is, then save.</string>
     <string name="energy_nothing_measures">No device of the house measures its consumption yet (a smart plug with metering, for instance).</string>
-    <string name="energy_no_whole_house">Without the Linky meter or a clamp on the main feed, Moli only counts the devices ticked: the Energy page shows their consumption, not the whole home’s.</string>
+    <string name="energy_no_whole_house">No visible effect: without the Linky meter, a clamp on the supply or a circuit of the panel, the Energy page’s totals stay at zero, since a plugged-in device does not count on its own. Tick a whole-house measure, or say a plug is “A circuit of the panel”.</string>
     <string name="energy_not_answering">not answering</string>
     <string name="energy_own_price">own price %1$s €/kWh</string>
     <string name="energy_details">Edit</string>
@@ -788,4 +788,7 @@
     <string name="server_mirror">Mirror of another house</string>
     <string name="server_mirror_about">To compare with a house running elsewhere: Moli reads everything, keeps history, runs automations, but sends no order.</string>
     <string name="server_mirror_on">Mirror: no order leaves this house.</string>
+    <string name="integrations_about">The devices and services Moli brings into the house. Saving restarts Moli.</string>
+    <string name="network_about">What answers on the home network, with its address: to find a device to add.</string>
+    <string name="energy_about">Your contract, what Moli follows, and what it drives. Saving restarts Moli.</string>
 </resources>

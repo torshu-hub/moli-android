@@ -78,6 +78,7 @@ public final class NetworkActivity extends Activity {
         status.setTextColor(MUTED);
         status.setPadding(dp(16), 0, 0, 0);
         top.addView(status, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        root.addView(new Look(this).header(getString(R.string.network), getString(R.string.network_about)));
         root.addView(top);
         table = new TableLayout(this);
         table.setPadding(0, dp(12), 0, 0);
@@ -86,6 +87,7 @@ public final class NetworkActivity extends Activity {
         root.addView(wide);
         ScrollView page = new ScrollView(this);
         page.addView(root);
+        new Look(this).edgeToEdge(page);
         setContentView(page);
         if (last == null) run(); else show();
     }

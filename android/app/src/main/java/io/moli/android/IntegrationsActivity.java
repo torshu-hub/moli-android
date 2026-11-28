@@ -119,6 +119,7 @@ public final class IntegrationsActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20), dp(12), dp(20), 0);
+        root.addView(new Look(this).header(getString(R.string.integrations), getString(R.string.integrations_about)));
         banner = text("", 15, Color.WHITE, false);
         banner.setPadding(dp(14), dp(10), dp(14), dp(10));
         banner.setBackground(round(INFO, 10));
@@ -143,6 +144,7 @@ public final class IntegrationsActivity extends Activity {
             both.addView(side, matchWrap(0, dp(16), 0, 0));
             root.addView(scroll(both), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         }
+        new Look(this).edgeToEdge(root);
         setContentView(root);
     }
 
