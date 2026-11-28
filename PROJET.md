@@ -31,7 +31,7 @@ Une intégration propre, c'est une fonctionnalité complète et native de Moli O
 - Économiser les tokens : rien que la CI refait (pas de contrôle local en double), ce que je peux vérifier sur la tablette m'est laissé et listé dans le rapport, pas de vérification de secours programmée, pas d'attente ni de lecture inutile.
 - Après chaque nouvelle APK : son numéro, son lien direct cliquable (`releases/download/apk/moli-<numéro>.apk`) et le même lien dans un bloc à copier.
 - Compte rendu final d'une livraison (une fois la PR de documentation fusionnée) : le dire, redonner le numéro de l'APK, son lien cliquable et le même lien dans un bloc à copier, puis les essais à faire sur la tablette, numérotés.
-- Lots courts, sur une branche, avec une PR ; s'arrêter au premier résultat visible. Tu fusionnes toi-même, je n'ai rien à faire sur GitHub. Contrôles : scripts/check.sh et la CI.
+- Lots à la mesure de la mission, sur une branche, avec une PR par lot. Une grosse mission se fait en un travail complet et réfléchi, découpé en lots qui ont chacun un sens (un écran entier, une fonction entière) : pas de premier jet à corriger, pas d'arrêt au premier résultat visible. Tu fusionnes toi-même, je n'ai rien à faire sur GitHub. Contrôles : scripts/check.sh et la CI.
 - Rapport court dans la PR : ajouté, retiré, écarts avec Moli officiel.
 - État : un seul ETAT.md court (jalon, branche/PR, décisions actives, preuves, prochaine action).
 - Quand je lance ou change une mission : conseiller modèle et niveau de réflexion selon la difficulté et mon quota ; colorer seulement ce qui change.
