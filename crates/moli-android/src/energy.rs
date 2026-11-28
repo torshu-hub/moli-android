@@ -373,6 +373,10 @@ pub fn price(request: &Price) -> anyhow::Result<String> {
 /// What a point can be used for in `[energy]`.
 fn family(point: &Json) -> &'static str {
     let unit = point["unit"].as_str().unwrap_or_default();
+    // Consumption already split by hour (`enedis`, `grdf`): a meter with `history = true`.
+    if point["key"].as_str() == Some("hours") && point["kind"]["type"].as_str() == Some("text") {
+        return "history";
+    }
     let writable = point["access"]["write"].as_bool() == Some(true);
     match (point["kind"]["type"].as_str().unwrap_or_default(), unit) {
         ("binary", _) if writable => "switch",
@@ -393,7 +397,9 @@ fn guess(id: &str, device: &Json) -> &'static str {
         device["native_name"].as_str().unwrap_or_default()
     )
     .to_lowercase();
-    if said.contains("linky") || said.contains("enedis") {
+    if said.contains("gazpar") || said.contains("grdf") {
+        "gas"
+    } else if said.contains("linky") || said.contains("enedis") {
         "grid"
     } else if said.contains("solar") || said.contains("onduleur") || said.contains("inverter") {
         "solar"
@@ -452,6 +458,8 @@ fn points_of(snapshot: &Json, section: &Json) -> Json {
                 ("power", "W") if key == "power" => Some(0),
                 ("power", "W" | "kW") => Some(1),
                 ("energy", _) => Some(2),
+                // A service's hours are the device's consumption (its daily peak is no live power).
+                ("history", _) => Some(0),
                 _ => None,
             };
             if let Some(rank) = rank
@@ -777,6 +785,33 @@ mod tests {
         assert_eq!(measuring[0]["guess"], "appliance");
         assert_eq!(measuring[0]["followed"], false);
         assert_eq!(measuring[1]["followed"], true);
+    }
+
+    #[test]
+    fn a_service_that_reports_by_hour_is_a_meter_of_the_house() {
+        let snapshot = json!({"devices": [{
+            "id": "enedis:linky", "native_name": "Linky", "label": {},
+            "points": [
+                {"key": "hours", "label": "Heures", "kind": {"type": "text"}, "access": {"write": false}},
+                {"key": "last_day_kwh", "label": "Hier", "unit": "kWh", "kind": {"type": "numeric"}, "access": {"write": false}},
+                {"key": "last_day_peak", "label": "Pic", "unit": "W", "kind": {"type": "numeric"}, "access": {"write": false}}
+            ],
+            "state": {}
+        }]});
+        let seen = points_of(&snapshot, &json!({}));
+        let linky = &seen["measuring"][0];
+        assert_eq!(
+            linky["point"], "enedis:linky/hours",
+            "the hours, never the daily peak"
+        );
+        assert_eq!(linky["guess"], "grid");
+        let hours = seen["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == "enedis:linky/hours")
+            .unwrap();
+        assert_eq!(hours["family"], "history");
     }
 
     #[test]
