@@ -20,4 +20,5 @@
 - Chaque push sur `main` (même une fusion de documentation) publie une nouvelle APK numérotée et **retire la précédente** : le lien `moli-<numéro>.apk` donné avant la PR de documentation devient mort. → Donner le numéro du dernier run `android` de `main`, après la dernière fusion, une fois ce run terminé.
 - Moli officiel (`rudy-io/moli-os`, public) : `add_repo` demande l'accord de l'utilisateur, mais git lit directement. → `git remote add upstream https://github.com/rudy-io/moli-os && git fetch upstream main`, puis `git merge upstream/main` (sans conflit quand l'officiel n'a pas bougé là où on a touché).
 - `create_pull_request` ne rend pas toujours le numéro de la PR. → `list_pull_requests` avant `subscribe_pr_activity` ; ne jamais le deviner.
+- Job `publish` d'`android` rouge sur « Release.tag_name already exists » : un `gh release view` raté par l'API, rien dans le code. → Une relance du job échoué suffit (vérifié pour l'APK 145).
 - Relancer un job en échec (`rerun_failed_jobs`) est refusé (403) tant que le run tourne encore. → Attendre la fin du run ; lire le journal d'un job par son `job_id` (`get_job_logs`).

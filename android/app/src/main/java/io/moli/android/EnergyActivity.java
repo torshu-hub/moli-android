@@ -518,9 +518,21 @@ public final class EnergyActivity extends Activity {
         LinearLayout card = section(R.string.energy_followed, R.string.energy_followed_help);
         if (rows.isEmpty()) card.addView(ui.note(getString(points == null ? R.string.energy_no_moli : R.string.energy_nothing_measures)));
         for (Row r : rows) card.addView(row(r, wide));
-        TextView whole = ui.note(getString(R.string.energy_no_whole_house));
-        whole.setTextColor(Look.WARN);
+        LinearLayout whole = ui.column();
         whole.setTag("whole");
+        TextView why = ui.note(getString(R.string.energy_no_whole_house));
+        why.setTextColor(Look.WARN);
+        whole.addView(why);
+        // Each device ticked counted on its own: the page's total is then their sum.
+        Button apart = ui.flat(getString(R.string.energy_each_apart));
+        apart.setOnClickListener(v -> {
+            int circuit = Arrays.asList(KINDS).indexOf("circuit");
+            for (Row r : rows)
+                if (r.box != null && r.box.isChecked() && "appliance".equals(kindOf(r))) r.kindChoice.setSelection(circuit);
+            refreshWithin();
+            refreshChanged();
+        });
+        whole.addView(apart, ui.matchWrap(0, ui.dp(4), 0, 0));
         card.addView(whole);
         Button page = ui.flat(getString(R.string.energy_open_page));
         page.setOnClickListener(v -> startActivity(new Intent(this, DashboardActivity.class).putExtra(DashboardActivity.ROUTE, "#/energie")));
@@ -529,7 +541,9 @@ public final class EnergyActivity extends Activity {
     }
 
     private View row(Row r, boolean wide) {
-        LinearLayout line = wide ? ui.row() : ui.column();
+        // Stacked on every screen: beside the name, the choices (and « Dans : … »
+        // once a circuit exists) would squeeze it to nothing.
+        LinearLayout line = ui.column();
         line.setPadding(0, ui.dp(10), 0, ui.dp(10));
         LinearLayout first = ui.row();
         r.box = new CheckBox(this);
@@ -544,10 +558,10 @@ public final class EnergyActivity extends Activity {
         TextView nowText = ui.text(now(r.point), 15, Look.ACCENT, true);
         nowText.setGravity(Gravity.END);
         first.addView(nowText, new LinearLayout.LayoutParams(ui.dp(84), ViewGroup.LayoutParams.WRAP_CONTENT));
-        line.addView(first, wide ? new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1) : ui.matchWrap(0, 0, 0, 0));
+        line.addView(first, ui.matchWrap(0, 0, 0, 0));
 
         LinearLayout second = ui.row();
-        if (!wide) second.setPadding(ui.dp(40), ui.dp(4), 0, 0);
+        second.setPadding(ui.dp(40), ui.dp(4), 0, 0);
         String[] words = new String[KINDS.length];
         for (int i = 0; i < KINDS.length; i++) words[i] = kindWords(KINDS[i]);
         r.kindChoice = spinner(words, Arrays.asList(KINDS).indexOf(r.kind));
