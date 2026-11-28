@@ -60,6 +60,10 @@
   const inside = (row) =>
     row === '__lights' ? lights : appliances.filter((a) => (a.within ?? '__rest') === row && !(a.estimated && !a.within));
 
+  // The panel's breakers that measure nothing themselves: each is the sum of
+  // the appliances `within` it, and what they explain leaves « le reste ».
+  const breakers = $derived(s?.breakers ?? []);
+
   // Who draws power right now: each circuit, then what none explains.
   const draws = $derived.by(() => {
     if (!s) return [];
@@ -68,6 +72,10 @@
       .map((m) => ({ id: m.id, name: m.name, w: Math.max(0, livePower(m.power, m.power_w) ?? 0) }));
     const lit = lights.reduce((t, a) => t + Math.max(0, livePower(a.power, a.power_w) ?? 0), 0);
     if (lights.length) list.push({ id: '__lights', name: t('energie.lumieres'), w: lit, estimated: true });
+    for (const b of breakers) {
+      const w = inside(b.id).reduce((t, a) => t + Math.max(0, livePower(a.power, a.power_w) ?? 0), 0);
+      list.push({ id: b.id, name: b.name, w, breaker: true });
+    }
     if (now != null) {
       const rest = Math.max(0, now - list.reduce((t, c) => t + c.w, 0));
       list.push({ id: '__rest', name: t('energie.reste'), w: rest, rest: true });
@@ -119,13 +127,26 @@
     const lit = lights.reduce((t, a) => t + (of(a).kwh ?? 0), 0);
     const litCost = lights.some((a) => of(a).cost != null) ? lights.reduce((t, a) => t + (of(a).cost ?? 0), 0) : null;
     if (lights.length) list.push({ id: '__lights', name: t('energie.lumieres'), kwh: lit, cost: litCost, estimated: true });
-    if (period.unmeasured) {
-      const r = period.unmeasured;
+    let inBreakers = 0;
+    let inBreakersCost = 0;
+    for (const b of breakers) {
+      const subs = inside(b.id).map(of);
+      const kwh = subs.reduce((t, a) => t + (a.kwh ?? 0), 0);
+      const cost = subs.some((a) => a.cost != null) ? subs.reduce((t, a) => t + (a.cost ?? 0), 0) : null;
+      inBreakers += kwh;
+      inBreakersCost += cost ?? 0;
+      list.push({ id: b.id, name: b.name, kwh, cost, breaker: true });
+    }
+    // What no circuit explains; with breakers and only a whole-home meter
+    // (no measured circuit), the total less what the breakers explain.
+    const whole = s.meters.some((m) => m.role === 'grid' || m.role === 'total');
+    const r = period.unmeasured ?? (breakers.length && whole ? period.total : null);
+    if (r) {
       list.push({
         id: '__rest',
         name: t('energie.reste'),
-        kwh: Math.max(0, r.kwh - lit),
-        cost: r.cost != null ? Math.max(0, r.cost - (litCost ?? 0)) : null,
+        kwh: Math.max(0, r.kwh - lit - inBreakers),
+        cost: r.cost != null ? Math.max(0, r.cost - (litCost ?? 0) - inBreakersCost) : null,
         rest: true,
       });
     }
@@ -408,7 +429,7 @@
           <ul class="bars">
             {#each draws as d (d.id)}
               <li class:rest={d.rest}>
-                <span class="name">{d.name}{#if d.estimated} <small class="muted" title={t('energie.estime_ampoules')}>{t('energie.estime')}</small>{/if}</span>
+                <span class="name">{d.name}{#if d.estimated} <small class="muted" title={t('energie.estime_ampoules')}>{t('energie.estime')}</small>{/if}{#if d.breaker} <small class="muted" title={t('energie.disjoncteur_somme')}>{t('energie.disjoncteur')}</small>{/if}</span>
                 <span class="track"><i style="width:{(d.w / drawMax) * 100}%"></i></span>
                 <b class="num">{watts(d.w)}</b>
               </li>
@@ -439,7 +460,7 @@
           <ul class="bars">
             {#each parts as p (p.id)}
               <li class:rest={p.rest}>
-                <span class="name">{p.name} <small class="muted">{t('energie.pct', { n: Math.round((p.kwh / partsTotal) * 100) })}{p.estimated ? ' ≈' : ''}</small></span>
+                <span class="name">{p.name} <small class="muted" title={p.breaker ? t('energie.disjoncteur_somme') : undefined}>{t('energie.pct', { n: Math.round((p.kwh / partsTotal) * 100) })}{p.estimated ? ' ≈' : ''}{p.breaker ? ` · ${t('energie.disjoncteur')}` : ''}</small></span>
                 <span class="track"><i style="width:{(p.kwh / partsMax) * 100}%"></i></span>
                 <b class="num">{kwh(p.kwh)} kWh</b>
                 {#if p.cost != null}<small class="muted num cost">{euros(p.cost, cur)}</small>{/if}

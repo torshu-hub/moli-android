@@ -86,6 +86,9 @@ public final class EnergyActivity extends Activity {
     private Button save;
     private final List<Row> rows = new ArrayList<>();
     private final List<JSONObject> loads = new ArrayList<>();
+    /** The panel's breakers that measure nothing themselves (`[[energy.breaker]]`). */
+    private final List<JSONObject> breakers = new ArrayList<>();
+    private LinearLayout breakersBox;
     private LinearLayout loadsBox;
     private boolean peakHours;
     private EditText singlePrice, peakPrice, offPeakPrice, fee;
@@ -186,6 +189,9 @@ public final class EnergyActivity extends Activity {
             r.device = d.optString("device");
             rows.add(r);
         }
+        breakers.clear();
+        JSONArray panel = saved.optJSONArray("breaker");
+        for (int i = 0; panel != null && i < panel.length(); i++) breakers.add(copy(panel.optJSONObject(i)));
         loads.clear();
         JSONArray driven = saved.optJSONArray("load");
         for (int i = 0; driven != null && i < driven.length(); i++) loads.add(copy(driven.optJSONObject(i)));
@@ -290,6 +296,7 @@ public final class EnergyActivity extends Activity {
 
         LinearLayout first = ui.column(), second = ui.column();
         first.addView(followed(wide));
+        first.addView(panel());
         first.addView(heater());
         second.addView(contract());
         second.addView(others());
@@ -631,6 +638,10 @@ public final class EnergyActivity extends Activity {
                 r.withinIds.add(idOf(c));
                 words.add(getString(R.string.energy_within_named, c.name));
             }
+            for (JSONObject b : breakers) {
+                r.withinIds.add(b.optString("id"));
+                words.add(getString(R.string.energy_within_named, b.optString("name")));
+            }
             r.withinChoice.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, words));
             r.withinChoice.setSelection(Math.max(0, r.withinIds.indexOf(keep)));
             r.withinChoice.setVisibility("appliance".equals(k) && r.withinIds.size() > 1 ? View.VISIBLE : View.GONE);
@@ -638,6 +649,86 @@ public final class EnergyActivity extends Activity {
         }
         View note = getWindow().getDecorView().findViewWithTag("whole");
         if (note != null) note.setVisibility(whole || !any ? View.GONE : View.VISIBLE);
+    }
+
+    // ---- The panel: its breakers, and the plugs behind each ----
+
+    private View panel() {
+        LinearLayout card = section(R.string.energy_panel, R.string.energy_panel_about);
+        breakersBox = ui.column();
+        card.addView(breakersBox);
+        Button add = ui.flat(getString(R.string.energy_breaker_add));
+        add.setOnClickListener(v -> nameBreaker(null));
+        card.addView(add, ui.matchWrap(0, ui.dp(8), 0, 0));
+        fillBreakers();
+        return card;
+    }
+
+    /** The plugs whose « Dans : … » says this breaker. */
+    private List<String> behind(String id) {
+        List<String> names = new ArrayList<>();
+        for (Row r : rows) {
+            if (r.box == null || !r.box.isChecked() || r.withinChoice == null) continue;
+            int at = r.withinChoice.getSelectedItemPosition();
+            if (at > 0 && at < r.withinIds.size() && id.equals(r.withinIds.get(at))) names.add(r.name);
+        }
+        return names;
+    }
+
+    private void fillBreakers() {
+        if (breakersBox == null) return;
+        breakersBox.removeAllViews();
+        if (breakers.isEmpty()) breakersBox.addView(ui.note(getString(R.string.energy_panel_none)));
+        for (JSONObject b : new ArrayList<>(breakers)) {
+            LinearLayout line = ui.row();
+            line.setPadding(0, ui.dp(6), 0, ui.dp(6));
+            LinearLayout words = ui.column();
+            words.addView(ui.text(b.optString("name"), 16, Look.INK, true));
+            List<String> inside = behind(b.optString("id"));
+            words.addView(ui.text(inside.isEmpty() ? getString(R.string.energy_breaker_empty) : String.join(", ", inside), 13,
+                    inside.isEmpty() ? Look.WARN : Look.MUTED, false));
+            line.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            Button remove = ui.flat("✕");
+            remove.setOnClickListener(v -> {
+                breakers.remove(b);
+                refreshWithin();
+                refreshChanged();
+                fillBreakers();
+            });
+            line.addView(remove, new LinearLayout.LayoutParams(ui.dp(48), ui.dp(40)));
+            line.setOnClickListener(v -> nameBreaker(b));
+            breakersBox.addView(line);
+        }
+    }
+
+    /** A breaker's name: a new one (`b` null) or a rename (its id stays, history and plugs with it). */
+    private void nameBreaker(JSONObject b) {
+        EditText field = ui.field(getString(R.string.energy_breaker_hint), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        if (b != null) field.setText(b.optString("name"));
+        LinearLayout box = ui.column();
+        box.setPadding(ui.dp(20), ui.dp(4), ui.dp(20), 0);
+        box.addView(field);
+        new AlertDialog.Builder(this)
+                .setTitle(b == null ? R.string.energy_breaker_add : R.string.energy_breaker_rename)
+                .setView(box)
+                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                    String name = field.getText().toString().trim();
+                    if (name.isEmpty()) return;
+                    try {
+                        if (b != null) b.put("name", name);
+                        else {
+                            List<String> taken = new ArrayList<>();
+                            for (Row r : rows) taken.add(idOf(r));
+                            for (JSONObject x : breakers) taken.add(x.optString("id"));
+                            breakers.add(new JSONObject().put("id", SettingsScreen.slug(name, taken, "disjoncteur")).put("name", name));
+                        }
+                    } catch (JSONException impossible) { throw new IllegalStateException(impossible); }
+                    refreshWithin();
+                    refreshChanged();
+                    fillBreakers();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
 
     /** A row's details: the name shown, the measure used, a price of its own. */
@@ -963,6 +1054,7 @@ public final class EnergyActivity extends Activity {
         JSONArray driven = new JSONArray();
         for (JSONObject l : loads) driven.put(l);
         set(next, "load", driven.length() == 0 ? null : driven);
+        set(next, "breaker", breakers.isEmpty() ? null : new JSONArray(breakers));
 
         set(next, "monthly_fee", amountOf(fee, false, show));
         if (peakHours) {
@@ -1055,6 +1147,7 @@ public final class EnergyActivity extends Activity {
         unsaved.setVisibility(changed ? View.VISIBLE : View.GONE);
         boolean possible = !pointsOf("switch", null).isEmpty() && wholeHousePower() != null;
         if (possible != heaterPossible || loadsBox.getChildCount() == 0) { heaterPossible = possible; fillLoads(); }
+        fillBreakers();
     }
 
     // ---- Seeing, saving ----

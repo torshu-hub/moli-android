@@ -791,4 +791,11 @@
     <string name="integrations_about">The devices and services Moli brings into the house. Saving restarts Moli.</string>
     <string name="network_about">What answers on the home network, with its address: to find a device to add.</string>
     <string name="energy_about">Your contract, what Moli follows, and what it drives. Saving restarts Moli.</string>
+    <string name="energy_panel">Your electrical panel</string>
+    <string name="energy_panel_about">Your panel’s breakers, even unmeasured: put each plug behind its own (« In: … » on its line). The Energy page shows each breaker as the sum of its plugs, and takes it out of the rest; it is never added to the total.</string>
+    <string name="energy_panel_none">No breaker yet.</string>
+    <string name="energy_breaker_add">Add a breaker</string>
+    <string name="energy_breaker_rename">Rename the breaker</string>
+    <string name="energy_breaker_hint">Bathroom, Kitchen, Living room plugs…</string>
+    <string name="energy_breaker_empty">No plug behind it: it shows nothing.</string>
 </resources>

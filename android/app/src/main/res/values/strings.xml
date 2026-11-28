@@ -792,4 +792,11 @@
     <string name="integrations_about">Les appareils et services que Moli fait entrer dans la maison. Enregistrer redémarre Moli.</string>
     <string name="network_about">Ce qui répond sur le réseau de la maison, avec son adresse : pour retrouver un appareil à ajouter.</string>
     <string name="energy_about">Votre contrat, ce que Moli suit, et ce qu’il pilote. Enregistrer redémarre Moli.</string>
+    <string name="energy_panel">Votre tableau électrique</string>
+    <string name="energy_panel_about">Les disjoncteurs de votre tableau, même sans mesure : rangez chaque prise derrière le sien (« Dans : … » sur sa ligne). La page Énergie montre chaque disjoncteur comme la somme de ses prises, et le retire du reste ; il ne s’ajoute jamais au total.</string>
+    <string name="energy_panel_none">Aucun disjoncteur pour l’instant.</string>
+    <string name="energy_breaker_add">Ajouter un disjoncteur</string>
+    <string name="energy_breaker_rename">Renommer le disjoncteur</string>
+    <string name="energy_breaker_hint">Salle de bain, Cuisine, Prises du salon…</string>
+    <string name="energy_breaker_empty">Aucune prise rangée derrière : il ne montre rien.</string>
 </resources>

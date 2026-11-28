@@ -429,5 +429,7 @@
   "energie.jour.legende_habitude": "a usual day (7 days)",
   "energie.jour.legende_a_venir": "use to come (as usual)",
   "energie.jour.legende_prevision": "Solcast forecast",
-  "energie.jour.unite": "kWh per hour"
+  "energie.jour.unite": "kWh per hour",
+  "energie.disjoncteur": "Σ plugs",
+  "energie.disjoncteur_somme": "Breaker with no measure of its own: the sum of what its plugs measure"
 }

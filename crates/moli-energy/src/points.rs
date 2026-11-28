@@ -347,6 +347,7 @@ mod tests {
             price_now: None,
             period_point: None,
             meters: Vec::new(),
+            breakers: Vec::new(),
             live: None,
             flows: None,
             battery: None,
