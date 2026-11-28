@@ -363,6 +363,65 @@ abstract class SettingsScreen extends Activity {
         return b;
     }
 
+    /**
+     * « − 19,5 °C + »: a number chosen by steps, never typed, within
+     * [min, max]; `fallback` is what Moli takes when the file says nothing.
+     */
+    protected View stepper(String label, Double value, double fallback, double step, double min, double max, String unit,
+                           java.util.function.Consumer<Double> set) {
+        LinearLayout line = ui.row();
+        line.setPadding(0, ui.dp(4), 0, ui.dp(4));
+        TextView words = ui.text(label, 15, Look.INK, false);
+        line.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        double[] now = {value == null ? fallback : value};
+        TextView shown = ui.text("", 16, Look.INK, true);
+        shown.setGravity(Gravity.CENTER);
+        Runnable show = () -> shown.setText(new java.text.DecimalFormat(step < 1 ? "0.0" : "0").format(now[0]) + (unit.isEmpty() ? "" : " " + unit));
+        show.run();
+        line.addView(iconButton(R.drawable.ic_remove, Look.ACCENT, R.string.settings_less, () -> {
+            if (now[0] - step < min - 1e-9) return;
+            now[0] = Math.round((now[0] - step) / step) * step;
+            show.run();
+            set.accept(now[0]);
+        }));
+        line.addView(shown, new LinearLayout.LayoutParams(ui.dp(88), ViewGroup.LayoutParams.WRAP_CONTENT));
+        line.addView(iconButton(R.drawable.ic_add, Look.ACCENT, R.string.settings_more, () -> {
+            if (now[0] + step > max + 1e-9) return;
+            now[0] = Math.round((now[0] + step) / step) * step;
+            show.run();
+            set.accept(now[0]);
+        }));
+        return line;
+    }
+
+    /** A line that says what is chosen, and a button to choose it. */
+    protected View chosen(String label, String value, String warning, Runnable choose) {
+        LinearLayout box = ui.column();
+        box.setPadding(0, ui.dp(6), 0, ui.dp(6));
+        LinearLayout line = ui.row();
+        LinearLayout words = ui.column();
+        words.addView(ui.text(label, 13, Look.MUTED, true));
+        words.addView(ui.text(value == null || value.isEmpty() ? getString(R.string.settings_none_chosen) : value, 15,
+                value == null || value.isEmpty() ? Look.MUTED : Look.INK, false));
+        line.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        Button b = ui.flat(getString(R.string.home_choose));
+        b.setOnClickListener(v -> choose.run());
+        line.addView(b, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ui.dp(40)));
+        box.addView(line);
+        if (warning != null) box.addView(warning(warning));
+        return box;
+    }
+
+    /** A slug for a new id, from its name: lower case, no accents, dashes; never one of `taken`. */
+    static String slug(String name, java.util.Collection<String> taken, String fallback) {
+        String base = Picker.fold(name).replaceAll("[^a-z0-9]+", "-").replaceAll("^-+|-+$", "");
+        if (base.isEmpty()) base = fallback;
+        if (base.length() > 40) base = base.substring(0, 40);
+        String id = base;
+        for (int n = 2; taken.contains(id); n++) id = base + "-" + n;
+        return id;
+    }
+
     /** A text link with a leading icon: « Ajouter… ». */
     protected Button addButton(int label, Runnable action) {
         Button b = ui.flat(getString(label));

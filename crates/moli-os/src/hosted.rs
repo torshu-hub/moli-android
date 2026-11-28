@@ -47,6 +47,13 @@ pub(crate) async fn stopped(host: Option<Host>) {
     }
 }
 
+/// The official checks of the configuration at `config` (its sections, its
+/// drivers' ids, the guard, energy, scenes, heating…), without starting it:
+/// the host's settings screens write nothing Moli would refuse.
+pub fn check(config: &Path) -> anyhow::Result<()> {
+    Config::load_for_recovery(config).map(drop)
+}
+
 /// A running Moli, on its own thread.
 #[derive(Debug)]
 pub struct Hosted {

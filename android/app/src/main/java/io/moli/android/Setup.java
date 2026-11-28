@@ -288,6 +288,33 @@ final class Setup {
         return new JSONObject(call("home_house", config(context).getPath(), "", body));
     }
 
+    /** Sections of moli.toml as written (sections.rs `read`): `{sections: {name: value or null}}`. */
+    static JSONObject sections(Context context, String... names) throws Exception {
+        return new JSONObject(call("sections", config(context).getPath(), "", new JSONArray(java.util.Arrays.asList(names)).toString()));
+    }
+
+    /** « Voir ce qui sera écrit » for sections of moli.toml: `{before, after, error}`. Writes nothing. */
+    static JSONObject sectionsPreview(Context context, JSONObject set) throws Exception {
+        return new JSONObject(call("sections_preview", config(context).getPath(), "", new JSONObject().put("set", set).toString()));
+    }
+
+    /**
+     * Writes whole sections of moli.toml (`set`, JSON null or empty takes one
+     * out) once Moli's own checks accept the file, then restarts Moli as `put`
+     * does. Null when Moli runs with it; else the reason, the house as it was.
+     */
+    static String sectionsPut(Context context, JSONObject set) throws Exception {
+        String path = config(context).getPath();
+        try {
+            call("sections_put", path, "", new JSONObject().put("set", set).toString());
+        } catch (IllegalStateException refused) {
+            // Refused by Moli's checks: nothing written, Moli left running.
+            return String.valueOf(refused.getMessage());
+        }
+        Backup.stop(context);
+        return restart(context, path);
+    }
+
     /** The end of the journal of Moli and of the app (journal.rs). */
     static String journal(Context context) throws Exception {
         return call("journal", config(context).getPath(), "", "");
