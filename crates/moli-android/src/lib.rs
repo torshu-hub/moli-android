@@ -3,6 +3,7 @@
 //! own; `Setup.java` is the integrations screen ([`setup`]).
 
 pub mod energy;
+pub mod home;
 pub mod journal;
 pub mod meross;
 pub mod netatmo;
@@ -263,6 +264,13 @@ fn call(action: &str, config: &Path, key: String, body: &str) -> anyhow::Result<
         "energy_preview" => energy::preview(config, body)?.to_string(),
         "energy_price" => energy::price(&serde_json::from_str(body)?)?,
         "energy_points" => energy::points(config, &serde_json::from_str(body)?)?.to_string(),
+        "home" => home::read(config)?.to_string(),
+        "home_put" => {
+            home::put(config, body)?;
+            String::new()
+        }
+        "home_preview" => home::preview(config, body)?.to_string(),
+        "home_house" => home::house(&serde_json::from_str(body)?)?.to_string(),
         "network_scan" => network::scan(&serde_json::from_str(body)?)?.to_string(),
         other => anyhow::bail!("unknown action {other:?}"),
     })

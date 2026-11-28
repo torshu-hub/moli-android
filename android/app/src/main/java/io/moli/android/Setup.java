@@ -252,6 +252,42 @@ final class Setup {
         return new JSONObject(call("energy_points", config(context).getPath(), "", body));
     }
 
+    /** `data/home.json` as written (home.rs `read`): `{layout}`. */
+    static JSONObject home(Context context) throws Exception {
+        return new JSONObject(call("home", config(context).getPath(), "", ""));
+    }
+
+    /**
+     * Writes whole top-level keys of home.json (`set`, JSON null takes one
+     * out), the others kept; no restart: the dashboard reads it at each look.
+     * Null when written; else why not (nothing written).
+     */
+    static String homePut(Context context, JSONObject set) throws Exception {
+        try {
+            call("home_put", config(context).getPath(), "", new JSONObject().put("set", set).toString());
+            return null;
+        } catch (IllegalStateException refused) {
+            return String.valueOf(refused.getMessage());
+        }
+    }
+
+    /** « Voir ce qui sera écrit » for home.json: `{before, after, error}`. Writes nothing. */
+    static JSONObject homePreview(Context context, JSONObject set) throws Exception {
+        return new JSONObject(call("home_preview", config(context).getPath(), "",
+                new JSONObject().put("set", set).toString()));
+    }
+
+    /**
+     * The house as Moli runs it (home.rs `house`): `{devices: [{id, name,
+     * room, kind, switches: [{point, label}]}], rooms: [{name, outside,
+     * added}]}`. Moli must run.
+     */
+    static JSONObject homeHouse(Context context) throws Exception {
+        String pin = ProtectedKey.open(context)[1];
+        String body = new JSONObject().put("port", MoliService.port).put("pin", pin).toString();
+        return new JSONObject(call("home_house", config(context).getPath(), "", body));
+    }
+
     /** The end of the journal of Moli and of the app (journal.rs). */
     static String journal(Context context) throws Exception {
         return call("journal", config(context).getPath(), "", "");
