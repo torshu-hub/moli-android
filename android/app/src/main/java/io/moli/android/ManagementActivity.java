@@ -151,6 +151,7 @@ public final class ManagementActivity extends Activity {
         house.add(screen("heating", R.drawable.ic_thermostat, Look.AMBER, R.string.heating_screen, HeatingActivity.class, ""));
         house.add(screen("lights", R.drawable.ic_lightbulb, Look.AMBER, R.string.lights_screen, LightsActivity.class, ""));
         house.add(screen("scenes", R.drawable.ic_palette, Look.AMBER, R.string.scenes_screen, ScenesActivity.class, ""));
+        house.add(screen("outdoor", R.drawable.ic_partly_cloudy_day, Look.AMBER, R.string.outdoor_screen, OutdoorActivity.class, ""));
         house.add(screen("energy", R.drawable.ic_bolt, Look.AMBER, R.string.energy, EnergyActivity.class, ""));
         page.addView(ui.grid(house, columns));
 
@@ -266,6 +267,7 @@ public final class ManagementActivity extends Activity {
             now.put("heating", heatingSummary());
             now.put("lights", listSummary("fixture", R.plurals.lights_summary, null));
             now.put("scenes", listSummary("scene", R.plurals.scenes_summary, "rhythm"));
+            now.put("outdoor", outdoorSummary());
             now.put("energy", energySummary());
             handler.post(() -> {
                 if (isDestroyed()) return;
@@ -276,6 +278,24 @@ public final class ManagementActivity extends Activity {
                 }
             });
         });
+    }
+
+    /** « météo : 3 sources · 2 façades », or « Pas encore réglé ». */
+    private String outdoorSummary() {
+        JSONObject sections;
+        try { sections = Setup.sections(this, "outdoor", "sun").optJSONObject("sections"); } catch (Exception unreadable) { return null; }
+        List<String> parts = new ArrayList<>();
+        JSONObject o = sections.optJSONObject("outdoor");
+        if (o != null) {
+            Object f = o.opt("forecast");
+            int n = (f instanceof JSONArray ? ((JSONArray) f).length() : f instanceof String ? 1 : 0)
+                    + (o.optJSONArray("station") == null ? 0 : o.optJSONArray("station").length());
+            parts.add(getResources().getQuantityString(R.plurals.outdoor_summary_sources, n, n));
+        }
+        JSONObject s = sections.optJSONObject("sun");
+        JSONArray facades = s == null ? null : s.optJSONArray("facade");
+        if (facades != null && facades.length() > 0) parts.add(getResources().getQuantityString(R.plurals.outdoor_summary_facades, facades.length(), facades.length()));
+        return parts.isEmpty() ? getString(R.string.not_set_yet) : String.join(" · ", parts);
     }
 
     /** « 3 luminaires », « 2 scènes · rythme de la journée », or « Pas encore réglé ». */
