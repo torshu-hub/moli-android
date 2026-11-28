@@ -947,6 +947,9 @@ public final class EnergyActivity extends Activity {
             m.put("role", kind);
             m.put("point", r.point);
             set(m, "integrate", power);
+            // A service that reports each hour a day late (Enedis, GRDF): filed hour by hour.
+            boolean byHour = p != null ? "history".equals(p.optString("family")) : m.optBoolean("history");
+            set(m, "history", byHour);
             if (power || !"appliance".equals(kind)) m.remove("estimate");
             int w = r.withinChoice.getSelectedItemPosition();
             set(m, "within", "appliance".equals(kind) && w > 0 && w < r.withinIds.size() ? r.withinIds.get(w) : null);
