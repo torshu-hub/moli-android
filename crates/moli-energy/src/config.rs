@@ -38,6 +38,12 @@ pub struct Config {
     pub battery: Option<Battery>,
     #[serde(default, rename = "meter")]
     pub meters: Vec<MeterConfig>,
+    /// The panel's breakers that measure nothing themselves: appliances
+    /// say `within` one, and the Energy page shows it as the sum of what
+    /// they measure. Never added to the total (the whole home is measured
+    /// elsewhere, or not at all).
+    #[serde(default, rename = "breaker")]
+    pub breakers: Vec<Breaker>,
     /// Loads Moli switches on the panels' surplus and in off-peak hours.
     #[serde(default, rename = "load")]
     pub loads: Vec<crate::load::LoadConfig>,
@@ -63,6 +69,15 @@ pub struct Tariff {
     /// Price per kWh by period name; names compare without dots, spaces
     /// or case (« HP.. » is « hp »).
     pub prices: BTreeMap<String, f64>,
+}
+
+/// A breaker of the panel with no measure of its own.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Breaker {
+    /// Named by appliances' `within`: never rename it.
+    pub id: String,
+    pub name: String,
 }
 
 /// The live draw at the supplier's meter (Linky PAPP, in VA).
@@ -273,9 +288,34 @@ pub enum Reset {
 }
 
 impl Config {
+    /// Breakers: their ids taken before the meters' (they share them).
+    fn check_breakers<'a>(&'a self, ids: &mut HashSet<&'a String>) -> Result<(), String> {
+        for b in &self.breakers {
+            if b.id.is_empty()
+                || !b
+                    .id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                return Err(format!(
+                    "breaker id {:?}: letters, digits, '_' or '-' only",
+                    b.id
+                ));
+            }
+            if b.name.trim().is_empty() {
+                return Err(format!("breaker {:?}: a name", b.id));
+            }
+            if !ids.insert(&b.id) {
+                return Err(format!("duplicate breaker id {:?}", b.id));
+            }
+        }
+        Ok(())
+    }
+
     pub fn check(&self) -> Result<(), String> {
         TimeZone::get(&self.timezone).map_err(|e| format!("timezone {:?}: {e}", self.timezone))?;
         let mut ids = HashSet::new();
+        self.check_breakers(&mut ids)?;
         for m in &self.meters {
             if m.id.is_empty()
                 || !m
@@ -289,7 +329,7 @@ impl Config {
                 ));
             }
             if !ids.insert(&m.id) {
-                return Err(format!("duplicate meter id {:?}", m.id));
+                return Err(format!("duplicate meter or breaker id {:?}", m.id));
             }
             for point in std::iter::once(&m.point).chain(&m.power) {
                 check_point(point).map_err(|e| format!("meter {:?}: {e}", m.id))?;
@@ -304,10 +344,11 @@ impl Config {
                 let inside = self
                     .meters
                     .iter()
-                    .any(|o| &o.id == within && matches!(o.role, Role::Circuit | Role::Total));
+                    .any(|o| &o.id == within && matches!(o.role, Role::Circuit | Role::Total))
+                    || self.breakers.iter().any(|b| &b.id == within);
                 if m.role != Role::Appliance || !inside {
                     return Err(format!(
-                        "meter {:?}: `within` is for an appliance, naming a circuit or total meter",
+                        "meter {:?}: `within` is for an appliance, naming a circuit or total meter, or a breaker",
                         m.id
                     ));
                 }
@@ -526,6 +567,21 @@ mod tests {
         );
         let circuit = "[[meter]]\nid = \"c3\"\nname = \"Circuit 3\"\npoint = \"em:x/e3\"\nrole = \"circuit\"\n";
         parse(&format!("{ok}{circuit}{plug}within = \"c3\"\n")).unwrap();
+        // A breaker of the panel, measured by nothing but its appliances.
+        let breaker = "[[breaker]]\nid = \"sdb\"\nname = \"Salle de bain\"\n";
+        parse(&format!("{ok}{breaker}{plug}within = \"sdb\"\n")).unwrap();
+        assert!(
+            parse(&format!("{ok}{breaker}{breaker}")).is_err(),
+            "a breaker twice"
+        );
+        assert!(
+            parse(&format!(
+                "{ok}{}",
+                breaker.replace("name = \"Salle de bain\"", "name = \" \"")
+            ))
+            .is_err(),
+            "no name"
+        );
         let late = "[[meter]]\nid = \"linky\"\nname = \"Linky\"\npoint = \"enedis:linky/hours\"\nrole = \"grid\"\nhistory = true\n";
         assert!(parse(&format!("{ok}{late}")).is_ok());
         assert!(parse(&format!("{ok}{late}integrate = true\n")).is_err());

@@ -250,6 +250,7 @@ const ORDER: &[&str] = &[
     "live",
     "battery",
     "meter",
+    "breaker",
     "load",
 ];
 
@@ -785,6 +786,23 @@ mod tests {
         assert_eq!(measuring[0]["guess"], "appliance");
         assert_eq!(measuring[0]["followed"], false);
         assert_eq!(measuring[1]["followed"], true);
+    }
+
+    #[test]
+    fn a_plug_goes_behind_a_breaker_of_the_panel() {
+        let (_dir, config) = house("breaker", "[server]\nlisten = \"0.0.0.0:8790\"\n");
+        let body = r#"{"section":{"breaker":[{"id":"sdb","name":"Salle de bain"}],"meter":[{"id":"seche","name":"Sèche-serviettes","role":"appliance","point":"meross-1:aaaa/power","integrate":true,"within":"sdb"}]}}"#;
+        put(&config, body).unwrap();
+        let text = std::fs::read_to_string(&config).unwrap();
+        assert!(
+            text.contains("[[energy.breaker]]\nid = \"sdb\"\nname = \"Salle de bain\""),
+            "{text}"
+        );
+        assert!(text.contains("within = \"sdb\""), "{text}");
+        // A plug behind a breaker the panel does not have: refused, nothing written.
+        let wrong = body.replace("\"within\":\"sdb\"", "\"within\":\"cuisine\"");
+        assert!(put(&config, &wrong).is_err());
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), text);
     }
 
     #[test]

@@ -41,6 +41,12 @@ Les compteurs cumulés deviennent des **kWh et des euros heure par heure**, gard
   - `appliance` : un **appareil** mesuré à sa prise (par exemple la télé) : affiché
     **dans** son circuit (`within = "<id du circuit>"`) ou dans « le reste de la maison »
     (sans `within`), jamais ajouté au total ni retranché du reste (pas de double compte).
+  - `[[energy.breaker]]` (`id`, `name`) : un **disjoncteur du tableau sans mesure propre**.
+    Un appareil le désigne par `within = "<id du disjoncteur>"` ; la page Énergie le montre
+    comme une ligne du tableau, **somme de ce que mesurent ses appareils** (« Σ prises »), et
+    le retire du « reste » ; jamais ajouté au total (avec seulement un compteur de toute la
+    maison et des disjoncteurs, « le reste » = le total moins ses disjoncteurs et les lumières
+    estimées). L'écran Android « Énergie » les crée et y range les prises.
   - `integrate = true` : `point` est une **puissance** (W) ; Moli en fait l'énergie
     (puissance tenue × temps, au plus 15 min d'un coup, un tic toutes les 5 min, rien de
     compté hors ligne ni pendant un arrêt de Moli). Pour les prises Tuya, dont `add_ele`

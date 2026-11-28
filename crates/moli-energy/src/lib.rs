@@ -259,6 +259,10 @@ pub struct Summary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub period_point: Option<String>,
     pub meters: Vec<MeterInfo>,
+    /// The panel's breakers that measure nothing themselves: the page adds
+    /// up the appliances `within` each.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub breakers: Vec<config::Breaker>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live: Option<LiveInfo>,
     /// Where the power goes right now, with solar meters.
@@ -538,6 +542,7 @@ impl Energy {
             flows: Flows::of(&meters, battery.as_ref().and_then(|b| b.power_w)),
             battery,
             meters,
+            breakers: config.breakers.clone(),
             live: self.live(),
             today: Period::of(config, &rows, today, tomorrow),
             yesterday: Period::of(config, &rows, yesterday, today),

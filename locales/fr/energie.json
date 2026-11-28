@@ -429,5 +429,7 @@
   "energie.jour.legende_habitude": "une journée habituelle (7 jours)",
   "energie.jour.legende_a_venir": "conso attendue (comme d'habitude)",
   "energie.jour.legende_prevision": "prévision Solcast",
-  "energie.jour.unite": "kWh par heure"
+  "energie.jour.unite": "kWh par heure",
+  "energie.disjoncteur": "Σ prises",
+  "energie.disjoncteur_somme": "Disjoncteur sans mesure propre : la somme de ce que mesurent ses prises"
 }
