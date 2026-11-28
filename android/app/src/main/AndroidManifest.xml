@@ -56,6 +56,14 @@
             android:theme="@style/Moli.Home"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".GuardActivity" android:exported="false"
+            android:theme="@style/Moli.Home"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".McpActivity" android:exported="false"
+            android:theme="@style/Moli.Home"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize" />
         <activity android:name=".NetworkActivity" android:exported="false"
             android:label="@string/network"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden" />
