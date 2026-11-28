@@ -5,54 +5,85 @@ import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
-import android.graphics.Color;
-import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
-import android.widget.ScrollView;
-import android.widget.Switch;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.text.DateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
-/** The management screen: Moli's state, start/stop, integrations, the dashboard. */
+/**
+ * The home screen of the app (android/REFONTE.md): where Moli stands and
+ * how to reach it, then every screen of the house by group, each tile saying
+ * in one line where things stand.
+ */
 public final class ManagementActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService probe = Executors.newSingleThreadExecutor();
+    private final Look ui = new Look(this);
     private volatile boolean healthy;
-    private TextView state;
+    /** Moli answered at the last look: the summaries are read again when it starts answering. */
+    private boolean answered;
+    private int ticks;
+    private TextView state, address;
+    private View dot;
     private Button power, open;
+    /** The tiles' lines that Moli and the files fill, and what they last said (kept when the page is rebuilt). */
+    private TextView integrationsLine, energyLine, backupLine;
+    private String integrationsText, energyText;
+
+    private TextView summary(String words) {
+        TextView t = new TextView(this);
+        t.setText(words);
+        return t;
+    }
 
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
             boolean running = NativeServer.running();
             int port = MoliService.port;
             if (running) probe.execute(() -> healthy = healthy(port)); else healthy = false;
+            boolean serving = running && healthy;
             String failure = MoliService.refused != null ? MoliService.refused : NativeServer.failure();
             if (MoliService.stopping) state.setText(R.string.state_stopping);
-            else if (running && healthy) state.setText(getString(R.string.state_running, port));
+            else if (serving) state.setText(R.string.state_running);
             else if (running || MoliService.starting) state.setText(R.string.state_starting);
             else if (failure != null) state.setText(getString(R.string.state_failed, failure));
             else state.setText(R.string.state_stopped);
-            int tint = MoliService.stopping || running && !healthy || MoliService.starting ? WARN
-                    : running ? OK : failure != null ? BAD : MUTED;
-            dot.setBackground(shape(tint, 0, 7));
+            int tint = MoliService.stopping || running && !healthy || MoliService.starting ? Look.WARN
+                    : running ? Look.OK : failure != null ? Look.BAD : Look.MUTED;
+            dot.setBackground(ui.round(tint, 6));
             boolean on = running || MoliService.starting;
             power.setText(on ? R.string.stop : R.string.start);
             power.setEnabled(!MoliService.stopping);
-            open.setEnabled(running && healthy);
+            open.setEnabled(serving);
+            open.setAlpha(serving ? 1f : 0.5f);
+            String here = serving ? Setup.homeAddress(ManagementActivity.this) : null;
+            address.setVisibility(here != null ? View.VISIBLE : View.GONE);
+            if (here != null) address.setText(getString(R.string.home_address, "http://" + here + ":" + port));
+            // Read again when Moli starts or stops answering, then every 10 s while it does.
+            if (serving != answered || serving && ++ticks % 10 == 0) { answered = serving; readSummaries(); }
             handler.postDelayed(this, 1000);
         }
     };
@@ -69,158 +100,222 @@ public final class ManagementActivity extends Activity {
         }
     }
 
-    private static final int INK = 0xFF1B2733, MUTED = 0xFF5C6B7A, PAGE = 0xFFF2F4F7, CARD = 0xFFFFFFFF,
-            ACCENT = 0xFF234E70, LINE = 0xFFDDE3EA, OK = 0xFF2E7D4F, WARN = 0xFFB26A00, BAD = 0xFFB3261E;
-    private View dot;
-
-    private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
-
-    private GradientDrawable shape(int fill, int line, int radius) {
-        GradientDrawable g = new GradientDrawable();
-        g.setColor(fill);
-        g.setCornerRadius(dp(radius));
-        if (line != 0) g.setStroke(dp(2), line);
-        return g;
-    }
-
-    private TextView text(String value, int size, int color, boolean bold) {
-        TextView t = new TextView(this);
-        t.setText(value);
-        t.setTextSize(size);
-        t.setTextColor(color);
-        if (bold) t.setTypeface(null, android.graphics.Typeface.BOLD);
-        return t;
-    }
-
-    private LinearLayout card() {
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(dp(16), dp(14), dp(16), dp(14));
-        c.setBackground(shape(CARD, 0, 16));
-        return c;
-    }
-
-    private LinearLayout.LayoutParams gap(int top) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        p.setMargins(0, dp(top), 0, 0);
-        return p;
-    }
-
-    /** A card that opens something: its title and one line saying what it is. */
-    private LinearLayout tile(int title, int help, Runnable action) {
-        LinearLayout c = card();
-        c.addView(text(getString(title), 17, INK, true));
-        c.addView(text(getString(help), 13, MUTED, false), gap(2));
-        c.setOnClickListener(v -> action.run());
-        return c;
-    }
-
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(16), dp(16), dp(16), dp(24));
-
-        LinearLayout head = card();
-        LinearLayout line = new LinearLayout(this);
-        line.setGravity(Gravity.CENTER_VERTICAL);
-        dot = new View(this);
-        line.addView(dot, new LinearLayout.LayoutParams(dp(14), dp(14)));
-        LinearLayout titles = new LinearLayout(this);
-        titles.setOrientation(LinearLayout.VERTICAL);
-        titles.setPadding(dp(12), 0, dp(12), 0);
-        titles.addView(text(getString(R.string.app_name), 24, INK, true));
-        state = text("", 14, MUTED, false);
-        titles.addView(state);
-        line.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        power = new Button(this);
-        power.setAllCaps(false);
-        power.setTextColor(ACCENT);
-        power.setBackground(shape(PAGE, ACCENT, 10));
-        power.setOnClickListener(v -> togglePower());
-        line.addView(power);
-        head.addView(line);
-        root.addView(head);
-
-        open = new Button(this);
-        open.setText(R.string.open_dashboard);
-        open.setAllCaps(false);
-        open.setTextSize(20);
-        open.setTextColor(Color.WHITE);
-        open.setBackground(shape(ACCENT, 0, 16));
-        open.setOnClickListener(v -> startActivity(new Intent(this, DashboardActivity.class)));
-        LinearLayout.LayoutParams big = gap(12);
-        big.height = dp(72);
-        root.addView(open, big);
-
-        LinearLayout tiles = new LinearLayout(this);
-        LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1);
-        tiles.addView(tile(R.string.integrations, R.string.integrations_help, () ->
-                startActivity(new Intent(this, IntegrationsActivity.class))), half);
-        LinearLayout.LayoutParams other = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1);
-        other.setMargins(dp(12), 0, 0, 0);
-        tiles.addView(tile(R.string.network, R.string.network_help, () ->
-                startActivity(new Intent(this, NetworkActivity.class))), other);
-        root.addView(tiles, gap(12));
-
-        // The house's settings, one screen each (ETAT, mission 3).
-        LinearLayout settings = card();
-        settings.addView(text(getString(R.string.house_settings), 15, MUTED, true));
-        settings.addView(link(R.string.energy, () -> startActivity(new Intent(this, EnergyActivity.class))), gap(6));
-        root.addView(settings, gap(12));
-
-        LinearLayout house = card();
-        house.addView(text(getString(R.string.house_title), 15, MUTED, true));
-        house.addView(link(R.string.backup, this::chooseBackup), gap(6));
-        house.addView(link(R.string.restore, this::chooseRestore), gap(0));
-        house.addView(link(R.string.key_title, this::showKey), gap(0));
-        root.addView(house, gap(12));
-
-        LinearLayout launch = card();
-        Switch direct = new Switch(this);
-        direct.setText(R.string.direct_launch);
-        direct.setTextSize(16);
-        direct.setTextColor(INK);
-        direct.setChecked(directLaunch(this));
-        direct.setOnCheckedChangeListener((b, on) ->
-                getSharedPreferences("moli", MODE_PRIVATE).edit().putBoolean(DIRECT, on).apply());
-        launch.addView(direct);
-        launch.addView(text(getString(R.string.direct_launch_help), 13, MUTED, false), gap(4));
-        root.addView(launch, gap(12));
-
-        ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(PAGE);
-        scroll.setFillViewport(true);
-        scroll.addView(root);
-        setContentView(scroll);
-
+        build();
         // « Ouvrir Moli au lancement »: a fresh launch goes straight to the
         // dashboard; Back from its first page lands here, on this screen.
         if (saved == null && directLaunch(this) && ProtectedKey.exists(this))
             startActivity(new Intent(this, DashboardActivity.class));
     }
 
-    static final String DIRECT = "direct_launch";
+    /** Turned: the tiles take the new width. */
+    @Override public void onConfigurationChanged(Configuration changed) {
+        super.onConfigurationChanged(changed);
+        build();
+        handler.removeCallbacks(refresh);
+        handler.post(refresh);
+        readSummaries();
+    }
+
+    // ---- The page ----
+
+    private void build() {
+        boolean wide = getResources().getConfiguration().screenWidthDp >= 720;
+        int side = ui.dp(wide ? 32 : 16);
+        LinearLayout page = ui.column();
+        page.setPadding(side, ui.dp(wide ? 28 : 16), side, ui.dp(32));
+
+        page.addView(header(wide));
+
+        int columns = ui.columns();
+        integrationsLine = summary(integrationsText == null ? getString(R.string.integrations_help) : integrationsText);
+        energyLine = summary(energyText == null ? "" : energyText);
+        backupLine = summary(lastBackup());
+        page.addView(ui.group(getString(R.string.group_devices)));
+        List<View> devices = new ArrayList<>();
+        devices.add(ui.tile(R.drawable.ic_extension, Look.BLUE, getString(R.string.integrations), integrationsLine,
+                () -> startActivity(new Intent(this, IntegrationsActivity.class))));
+        devices.add(ui.tile(R.drawable.ic_wifi_find, Look.TEAL, getString(R.string.network), line(R.string.network_help),
+                () -> startActivity(new Intent(this, NetworkActivity.class))));
+        page.addView(ui.grid(devices, columns));
+
+        page.addView(ui.group(getString(R.string.group_house)));
+        List<View> house = new ArrayList<>();
+        house.add(ui.tile(R.drawable.ic_bolt, Look.AMBER, getString(R.string.energy), energyLine,
+                () -> startActivity(new Intent(this, EnergyActivity.class))));
+        page.addView(ui.grid(house, columns));
+
+        page.addView(ui.group(getString(R.string.group_tablet)));
+        List<View> tablet = new ArrayList<>();
+        tablet.add(ui.tile(R.drawable.ic_download, Look.SLATE, getString(R.string.backup), backupLine, this::chooseBackup));
+        tablet.add(ui.tile(R.drawable.ic_upload, Look.SLATE, getString(R.string.restore), line(R.string.restore_help), this::chooseRestore));
+        tablet.add(ui.tile(R.drawable.ic_key, Look.SLATE, getString(R.string.key_title), line(R.string.key_help), this::showKey));
+        tablet.add(ui.tile(R.drawable.ic_receipt_long, Look.SLATE, getString(R.string.journal_title), line(R.string.journal_help),
+                () -> Journal.show(this)));
+        tablet.add(directLaunchTile());
+        page.addView(ui.grid(tablet, columns));
+
+        // Wide screens: the page keeps a readable width, centred.
+        LinearLayout frame = new LinearLayout(this);
+        frame.setGravity(Gravity.CENTER_HORIZONTAL);
+        frame.addView(page, new LinearLayout.LayoutParams(Math.min(ui.dp(1200), getResources().getDisplayMetrics().widthPixels),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        ScrollView scroll = new ScrollView(this);
+        scroll.setClipToPadding(false);
+        scroll.setFillViewport(true);
+        scroll.addView(frame);
+        ui.edgeToEdge(scroll);
+        setContentView(scroll);
+    }
+
+    private TextView line(int words) { return summary(getString(words)); }
+
+    /** Moli's name, its state, where the other screens of the house reach it, and the way in. */
+    private View header(boolean wide) {
+        LinearLayout card = ui.column();
+        card.setPadding(ui.dp(20), ui.dp(18), ui.dp(20), ui.dp(18));
+        card.setBackground(ui.round(Look.CARD, 18));
+        card.setElevation(ui.dp(1));
+
+        LinearLayout top = ui.row();
+        LinearLayout titles = ui.column();
+        titles.addView(ui.text(getString(R.string.app_name), 28, Look.INK, true));
+        LinearLayout status = ui.row();
+        dot = new View(this);
+        status.addView(dot, new LinearLayout.LayoutParams(ui.dp(12), ui.dp(12)));
+        state = ui.text("", 15, Look.INK, false);
+        state.setPadding(ui.dp(8), 0, 0, 0);
+        status.addView(state, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        titles.addView(status, ui.matchWrap(0, ui.dp(4), 0, 0));
+        address = ui.text("", 13, Look.MUTED, false);
+        address.setVisibility(View.GONE);
+        address.setOnClickListener(v -> {
+            String here = Setup.homeAddress(this);
+            if (here == null) return;
+            String url = "http://" + here + ":" + MoliService.port;
+            getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Moli", url));
+            Toast.makeText(this, getString(R.string.home_address_copied, url), Toast.LENGTH_SHORT).show();
+        });
+        titles.addView(address, ui.matchWrap(0, ui.dp(4), 0, 0));
+        top.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        power = ui.flat("");
+        power.setCompoundDrawablesRelativeWithIntrinsicBounds(tinted(R.drawable.ic_power_settings_new, Look.ACCENT), null, null, null);
+        power.setCompoundDrawablePadding(ui.dp(6));
+        power.setPadding(ui.dp(14), 0, ui.dp(16), 0);
+        power.setOnClickListener(v -> togglePower());
+        top.addView(power, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ui.dp(48)));
+
+        open = ui.primary(getString(R.string.open_dashboard));
+        open.setTextSize(18);
+        open.setCompoundDrawablesRelativeWithIntrinsicBounds(tinted(R.drawable.ic_dashboard, 0xFFFFFFFF), null, null, null);
+        open.setCompoundDrawablePadding(ui.dp(10));
+        open.setPadding(ui.dp(24), 0, ui.dp(28), 0);
+        open.setBackground(ui.round(Look.ACCENT, 14));
+        open.setOnClickListener(v -> startActivity(new Intent(this, DashboardActivity.class)));
+        if (wide) {
+            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ui.dp(60));
+            p.setMargins(ui.dp(14), 0, 0, 0);
+            top.addView(open, p);
+            card.addView(top);
+        } else {
+            card.addView(top);
+            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(60));
+            p.setMargins(0, ui.dp(16), 0, 0);
+            card.addView(open, p);
+        }
+        return card;
+    }
+
+    private android.graphics.drawable.Drawable tinted(int res, int color) {
+        android.graphics.drawable.Drawable d = getDrawable(res).mutate();
+        d.setTint(color);
+        return d;
+    }
+
+    /** « Ouvrir Moli au lancement »: a tile with its switch. */
+    private View directLaunchTile() {
+        Switch direct = new Switch(this);
+        direct.setChecked(directLaunch(this));
+        direct.setOnCheckedChangeListener((b, on) ->
+                getSharedPreferences("moli", MODE_PRIVATE).edit().putBoolean(DIRECT, on).apply());
+        LinearLayout tile = ui.tile(R.drawable.ic_rocket_launch, Look.SLATE, getString(R.string.direct_launch), line(R.string.direct_launch_help), null);
+        tile.addView(direct);
+        tile.setOnClickListener(v -> direct.toggle());
+        return tile;
+    }
+
+    // ---- Summaries: one line per tile, from the files and from Moli ----
+
+    private void readSummaries() {
+        int port = MoliService.port;
+        boolean serving = answered;
+        probe.execute(() -> {
+            String integrations = integrationsSummary(serving ? IntegrationsActivity.health(port) : null);
+            String energy = energySummary();
+            handler.post(() -> {
+                if (isDestroyed()) return;
+                if (integrations != null) integrationsLine.setText(integrationsText = integrations);
+                if (energy != null) energyLine.setText(energyText = energy);
+            });
+        });
+    }
+
+    /** « 3 intégrations · toutes répondent », « … · 1 ne répond pas », or none yet. */
+    private String integrationsSummary(Map<String, JSONObject> live) {
+        JSONArray drivers;
+        try { drivers = Setup.drivers(this); } catch (Exception unreadable) { return getString(R.string.integrations_help); }
+        int count = 0, silent = 0;
+        for (int i = 0; i < drivers.length(); i++) {
+            JSONObject d = drivers.optJSONObject(i);
+            if (!d.optBoolean("enabled", true)) continue;
+            count++;
+            JSONObject status = live == null ? null : live.get(d.optString("id"));
+            // Starting or waiting is not silent; only an integration in error or stopped is.
+            String now = status == null ? "" : status.optString("state");
+            if ("backoff".equals(now) || "stopped".equals(now)) silent++;
+        }
+        if (count == 0) return getString(R.string.integrations_none);
+        String head = getResources().getQuantityString(R.plurals.integrations_count, count, count);
+        if (live == null) return head;
+        return head + " · " + (silent == 0 ? getString(R.string.integrations_all_fine)
+                : getResources().getQuantityString(R.plurals.integrations_silent, silent, silent));
+    }
+
+    /** « Heures pleines / creuses · 4 appareils suivis », or « Pas encore réglé ». */
+    private String energySummary() {
+        JSONObject section;
+        try { section = Setup.energy(this).optJSONObject("section"); } catch (Exception unreadable) { return null; }
+        if (section == null || section.length() == 0) return getString(R.string.not_set_yet);
+        List<String> parts = new ArrayList<>();
+        JSONObject tariff = section.optJSONObject("tariff");
+        JSONObject prices = tariff == null ? null : tariff.optJSONObject("prices");
+        if (prices != null && prices.length() > 1) parts.add(getString(R.string.energy_summary_peak));
+        JSONArray meters = section.optJSONArray("meter");
+        int followed = meters == null ? 0 : meters.length();
+        if (followed > 0) parts.add(getResources().getQuantityString(R.plurals.energy_summary_followed, followed, followed));
+        return parts.isEmpty() ? getString(R.string.energy_summary_some) : String.join(" · ", parts);
+    }
+
+    private String lastBackup() {
+        long at = getSharedPreferences("moli", MODE_PRIVATE).getLong(LAST_BACKUP, 0);
+        return at == 0 ? getString(R.string.backup_help)
+                : getString(R.string.backup_last, DateFormat.getDateInstance(DateFormat.MEDIUM).format(new Date(at)));
+    }
+
+    static final String DIRECT = "direct_launch", LAST_BACKUP = "last_backup";
 
     static boolean directLaunch(android.content.Context context) {
         return context.getSharedPreferences("moli", MODE_PRIVATE).getBoolean(DIRECT, false);
     }
 
-    private Button link(int label, Runnable action) {
-        Button b = new Button(this);
-        b.setText(label);
-        b.setAllCaps(false);
-        b.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-        b.setTextColor(ACCENT);
-        b.setBackgroundColor(0);
-        b.setOnClickListener(v -> action.run());
-        return b;
-    }
+    // ---- This tablet: backup, restore, the key ----
 
     private static final int SAVE = 1, RESTORE = 2;
 
     private void chooseBackup() {
-        String day = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.ROOT).format(new java.util.Date());
+        String day = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.ROOT).format(new Date());
         startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
                 .setType("application/zip").putExtra(Intent.EXTRA_TITLE, "moli-sauvegarde-" + day + ".zip"), SAVE);
     }
@@ -239,7 +334,11 @@ public final class ManagementActivity extends Activity {
                 boolean done;
                 try { Backup.save(this, uri); done = true; } catch (Exception failure) { done = false; }
                 boolean ok = done;
-                handler.post(() -> Toast.makeText(this, ok ? R.string.backup_done : R.string.backup_failed, Toast.LENGTH_LONG).show());
+                if (ok) getSharedPreferences("moli", MODE_PRIVATE).edit().putLong(LAST_BACKUP, System.currentTimeMillis()).apply();
+                handler.post(() -> {
+                    Toast.makeText(this, ok ? R.string.backup_done : R.string.backup_failed, Toast.LENGTH_LONG).show();
+                    backupLine.setText(lastBackup());
+                });
             });
         } else if (request == RESTORE) {
             askRestoreKey(uri);
@@ -248,15 +347,11 @@ public final class ManagementActivity extends Activity {
 
     /** A backup holds no key: the one it was kept with, and the house code, are typed here. */
     private void askRestoreKey(Uri uri) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        EditText master = new EditText(this);
-        master.setHint(R.string.restore_key_field);
-        master.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        EditText pin = new EditText(this);
-        pin.setHint(R.string.pin_title);
-        pin.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
-        box.addView(master);
+        LinearLayout box = ui.column();
+        box.setPadding(ui.dp(20), ui.dp(4), ui.dp(20), 0);
+        EditText master = ui.field(getString(R.string.restore_key_field), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        EditText pin = ui.field(getString(R.string.pin_title), InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        box.addView(master, ui.matchWrap(0, 0, 0, ui.dp(10)));
         box.addView(pin);
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(R.string.restore)
@@ -281,17 +376,20 @@ public final class ManagementActivity extends Activity {
         dialog.show();
     }
 
-    /** The master key and the house code, to keep apart (NordPass): a backup never holds them. */
+    /** The master key and the house code, to keep apart (a password manager): a backup never holds them. */
     private void showKey() {
-        if (!ProtectedKey.exists(this)) return;
+        if (!ProtectedKey.exists(this)) {
+            Toast.makeText(this, R.string.key_none, Toast.LENGTH_LONG).show();
+            return;
+        }
         String[] key;
         try { key = ProtectedKey.open(this); } catch (Exception failure) {
             Toast.makeText(this, R.string.key_failed, Toast.LENGTH_LONG).show();
             return;
         }
         TextView text = new TextView(this);
-        int gap = (int) (16 * getResources().getDisplayMetrics().density);
-        text.setPadding(gap, gap, gap, 0);
+        int gap = ui.dp(20);
+        text.setPadding(gap, gap / 2, gap, 0);
         text.setTextIsSelectable(true);
         text.setTypeface(android.graphics.Typeface.MONOSPACE);
         text.setText(getString(R.string.key_master) + "\n" + key[0] + "\n\n" + getString(R.string.pin_title) + " : " + key[1]);
@@ -307,13 +405,7 @@ public final class ManagementActivity extends Activity {
                 .show();
     }
 
-    private Button button(LinearLayout parent, int label, Runnable action) {
-        Button button = new Button(this);
-        button.setText(label);
-        button.setOnClickListener(v -> action.run());
-        parent.addView(button);
-        return button;
-    }
+    // ---- Moli: start, stop, a new house ----
 
     private void togglePower() {
         if (NativeServer.running() || MoliService.starting) {
@@ -328,12 +420,14 @@ public final class ManagementActivity extends Activity {
 
     /** A new house: its code, chosen once (no terminal here to read an installation code). */
     private void choosePin() {
-        EditText pin = new EditText(this);
-        pin.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        EditText pin = ui.field(getString(R.string.pin_title), InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        LinearLayout box = ui.column();
+        box.setPadding(ui.dp(20), ui.dp(4), ui.dp(20), 0);
+        box.addView(pin);
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(R.string.pin_title)
                 .setMessage(R.string.pin_message)
-                .setView(pin)
+                .setView(box)
                 .setPositiveButton(android.R.string.ok, null)
                 .setNegativeButton(android.R.string.cancel, null)
                 .create();
@@ -354,7 +448,12 @@ public final class ManagementActivity extends Activity {
         dialog.show();
     }
 
-    @Override protected void onStart() { super.onStart(); handler.post(refresh); }
+    @Override protected void onStart() {
+        super.onStart();
+        handler.post(refresh);
+        readSummaries();
+    }
+
     @Override protected void onStop() { handler.removeCallbacks(refresh); super.onStop(); }
     @Override protected void onDestroy() { probe.shutdownNow(); super.onDestroy(); }
 }
