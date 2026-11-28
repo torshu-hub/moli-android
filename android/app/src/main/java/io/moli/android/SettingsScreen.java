@@ -302,7 +302,9 @@ abstract class SettingsScreen extends Activity {
                 busy = false;
                 if (isDestroyed()) return;
                 if (why == null) {
-                    baseline = draft;
+                    // What was just written is the page now (a typed key no longer shown).
+                    layOut();
+                    baseline = draft();
                     changed();
                     banner(getString(saved()), Look.OK);
                     handler.postDelayed(() -> { if (!busy) banner.setVisibility(View.GONE); }, 5000);
