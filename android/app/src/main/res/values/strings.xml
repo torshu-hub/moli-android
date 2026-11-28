@@ -250,7 +250,7 @@
     <string name="energy_followed">Ce que Moli suit</string>
     <string name="energy_followed_help">Cochez ce dont Moli doit compter la consommation, dites ce que c’est, puis enregistrez.</string>
     <string name="energy_nothing_measures">Aucun appareil de la maison ne mesure sa consommation pour l’instant (une prise connectée avec mesure, par exemple).</string>
-    <string name="energy_no_whole_house">Sans effet visible : sans le compteur Linky, une pince sur l’arrivée ou un circuit du tableau, les totaux de la page Énergie restent à zéro, car un appareil branché n’y compte pas seul. Cochez une mesure de toute la maison, ou dites d’une prise qu’elle est « Un circuit du tableau ».</string>
+    <string name="energy_no_whole_house">Sans effet visible : sans le compteur Linky (lu sur place ou par Enedis), une pince sur l’arrivée ou un circuit mesuré du tableau, les totaux de la page Énergie restent à zéro, car un appareil branché n’y compte pas seul.</string>
     <string name="energy_not_answering">ne répond pas</string>
     <string name="energy_own_price">prix particulier %1$s €/kWh</string>
     <string name="energy_details">Modifier</string>
