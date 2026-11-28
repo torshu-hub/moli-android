@@ -523,16 +523,6 @@ public final class EnergyActivity extends Activity {
         TextView why = ui.note(getString(R.string.energy_no_whole_house));
         why.setTextColor(Look.WARN);
         whole.addView(why);
-        // Each device ticked counted on its own: the page's total is then their sum.
-        Button apart = ui.flat(getString(R.string.energy_each_apart));
-        apart.setOnClickListener(v -> {
-            int circuit = Arrays.asList(KINDS).indexOf("circuit");
-            for (Row r : rows)
-                if (r.box != null && r.box.isChecked() && "appliance".equals(kindOf(r))) r.kindChoice.setSelection(circuit);
-            refreshWithin();
-            refreshChanged();
-        });
-        whole.addView(apart, ui.matchWrap(0, ui.dp(4), 0, 0));
         card.addView(whole);
         Button page = ui.flat(getString(R.string.energy_open_page));
         page.setOnClickListener(v -> startActivity(new Intent(this, DashboardActivity.class).putExtra(DashboardActivity.ROUTE, "#/energie")));
